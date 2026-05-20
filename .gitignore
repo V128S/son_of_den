@@ -16,6 +16,7 @@ google_credentials.json
 # Local AI assistant tool artifacts — not part of the project
 .claude/
 .gemini/
+.antigravitycli/
 
 # Internal docs, plans and specs — keep private
 docs/
