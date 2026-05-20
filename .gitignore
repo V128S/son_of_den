@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.DS_Store
+
+# Google Service Account key — never commit this
+google_credentials.json
+*.json.key
+
+# Local AI assistant tool artifacts — not part of the project
+.claude/
+.gemini/
+
+# Internal docs, plans and specs — keep private
+docs/
+
+# Persona prompts — proprietary logic, keep private
+personas.yaml
