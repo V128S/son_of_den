@@ -1,76 +1,191 @@
-# telegram-claude-bots
+<div align="center">
 
-Personal auto-responder + 5-bot panel discussion on Claude.
+# 🤖 Son of Den — Telegram Automation Suite
 
-Spec: `docs/specs/2026-05-19-telegram-claude-bots-design.md`
+**Personal assistant + multi-bot discussion system for Telegram**
 
-## Setup
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
+[![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat&logo=telegram)](https://core.telegram.org/bots)
+[![Tests](https://img.shields.io/badge/Tests-68%20passing-brightgreen?style=flat)](#testing)
+[![License](https://img.shields.io/badge/License-Private-red?style=flat)](#)
 
-### 1. Create bots in @BotFather (one-time)
+</div>
 
-You need 6 bots. Each needs `/setprivacy → Disable` so they see all group messages,
-and the panel ones must be added as admins to the panel group.
+---
 
-- `business_bot` — the auto-responder. Connect it via Settings → Telegram Business → Chatbots on your Premium account.
-- `panel_analyst`, `panel_skeptic`, `panel_creative`, `panel_pragmatist`, `panel_moderator` — the 5 panelists.
+## ✨ What it does
 
-### 2. Configure `.env`
+**Business Assistant** — auto-responds to Telegram messages on behalf of the owner. Understands context, reads Google Calendar in real time, and handles any question politely while the owner is busy.
 
-    cp .env.example .env
+**Panel Discussion** — 5 bots that debate any topic you throw at them: Analyst, Skeptic, Creative, Pragmatist, and a Moderator who synthesises everything into a clean takeaway.
 
-Fill in:
-- `ANTHROPIC_API_KEY`
-- 6 bot tokens
-- `PANEL_CHAT_ID` (negative number for the panel group; find by adding `@RawDataBot` once)
-- `ADMIN_USER_ID` (your own Telegram user id)
+---
 
-### 3. Install + run
+## 🏗 Architecture
 
-    uv sync
-    uv run python -m claudebots
+```
+One Python process · One asyncio loop · 6 Telegram bots
 
-Watch the logs — you should see `Starting polling on 6 bots`.
+┌─────────────────┐    ┌──────────────────────────────────┐
+│  Business Bot   │    │          Panel Bots               │
+│  (auto-reply)   │    │  Analyst · Skeptic · Creative     │
+│                 │    │  Pragmatist · Moderator           │
+└────────┬────────┘    └──────────────┬───────────────────┘
+         │                            │
+         └────────────┬───────────────┘
+                      │
+              ┌───────▼────────┐
+              │   Dispatcher   │
+              │  (aiogram 3.x) │
+              └───────┬────────┘
+                      │
+         ┌────────────┼────────────┐
+         │            │            │
+   ┌─────▼──┐  ┌──────▼───┐ ┌────▼──────┐
+   │Business│  │  Panel   │ │  Admin    │
+   │ Router │  │  Router  │ │  Router   │
+   └────────┘  └──────────┘ └───────────┘
+```
 
-## Tests
+**Core modules:**
+- `ConversationStore` — per-chat message history with ring buffer
+- `CircuitBreaker` — auto-fallback after consecutive API failures
+- `GoogleCalendarClient` — live schedule fetching with 60s cache
+- `PersonaRegistry` — hot-reloadable YAML persona definitions
+- `AlertSender` — throttled admin notifications
 
-    uv run pytest                  # all unit + integration
-    uv run pytest tests/unit       # quick: pure logic
-    uv run pytest -m e2e           # reserved for live tests; off by default
+---
 
-## Admin commands
+## 🚀 Quick Start
 
-DM any of the 6 bots:
-- `/ping` — alive check
-- `/reset` — clear conversation history for the current chat
-- `/cost` — token counters + approximate USD spend since process start
-- `/reload` — re-read `personas.yaml` without restarting
+### Prerequisites
 
-## Editing personas
+- Python 3.11+
+- [`uv`](https://docs.astral.sh/uv/) package manager
+- 6 Telegram bots created via [@BotFather](https://t.me/BotFather)
+- Telegram Premium (for Business feature)
 
-Edit `personas.yaml`, then send `/reload` to any bot. Broken YAML keeps the previous registry — bot stays alive.
+### 1. Clone & install
 
-## Manual acceptance checklist (run before your first "production")
+```bash
+git clone https://github.com/V128S/son_of_den.git
+cd son_of_den
+uv sync
+```
 
-- [ ] Connected `business_bot` via Settings → Telegram Business → Chatbots
-- [ ] Set Selected Chats = one test contact
-- [ ] Test contact sent a message → bot replied as Майя, "from bot" badge visible
-- [ ] `/reset` in DM with test contact → next message starts fresh context
-- [ ] Created panel group, added all 5 panel bots as admins
-- [ ] Found group id via @RawDataBot → put in `PANEL_CHAT_ID`
-- [ ] Sent a topic in panel → got 4 expert replies in order + moderator summary
-- [ ] Bots do NOT reply to each other when I am silent
-- [ ] Revoked Anthropic key temporarily → business sends Майя's fallback; panel sends moderator fallback
-- [ ] `/cost` reports tokens > 0 and reasonable USD figure
+### 2. Configure
 
-## Deploy on VPS
+```bash
+cp .env.example .env
+# Edit .env and fill in your tokens
+```
 
-See `deploy/telegram-claude-bots.service` for a systemd unit template.
+Key variables:
 
-    sudo cp deploy/telegram-claude-bots.service /etc/systemd/system/
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now telegram-claude-bots
-    journalctl -u telegram-claude-bots -f
+| Variable | Description |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `BUSINESS_BOT_TOKEN` | Business auto-responder bot |
+| `PANEL_BOT_*_TOKEN` | 5 panel bot tokens |
+| `PANEL_CHAT_ID` | Group chat ID (negative number) |
+| `ADMIN_USER_ID` | Your Telegram user ID |
+| `GOOGLE_SERVICE_ACCOUNT_FILE` | Path to Google credentials JSON *(optional)* |
 
-## Project layout
+### 3. Set up bots
 
-See spec section "Структура репозитория" for the canonical layout.
+**Business bot:**
+- In BotFather: `/setprivacy → Disable`
+- In Telegram: *Settings → Telegram Business → Chatbots* → connect the bot
+
+**Panel bots:**
+- Add all 5 to your panel group as **admins**
+- Get the group ID via `@RawDataBot` → put in `PANEL_CHAT_ID`
+
+### 4. Run
+
+```bash
+uv run python -m claudebots
+```
+
+You should see: `Starting polling on 6 bots`
+
+---
+
+## 🗓 Google Calendar Integration *(optional)*
+
+The business assistant can read your calendar in real time to answer questions like *"when is the dinner?"* or *"is there time for a call on Friday?"*
+
+**Setup:**
+1. Create a Service Account in [Google Cloud Console](https://console.cloud.google.com)
+2. Enable **Google Calendar API**
+3. Download the JSON key → place it in the project root
+4. Share your calendar with the service account email (read-only)
+5. Set in `.env`:
+   ```env
+   GOOGLE_SERVICE_ACCOUNT_FILE=google_credentials.json
+   GOOGLE_CALENDAR_ID=primary
+   USER_TIMEZONE=Europe/Kyiv
+   ```
+
+---
+
+## 🧪 Testing
+
+```bash
+uv run pytest                  # all 68 tests
+uv run pytest tests/unit       # unit tests only (fast)
+uv run pytest tests/integration
+```
+
+---
+
+## ⚙️ Admin Commands
+
+Send to any of the 6 bots (admin user only):
+
+| Command | Description |
+|---|---|
+| `/ping` | Health check — bot replies `pong` |
+| `/reset` | Clear conversation history for current chat |
+| `/cost` | Token usage + approximate USD spend |
+| `/reload` | Hot-reload `personas.yaml` without restart |
+
+---
+
+## 📁 Project Structure
+
+```
+claudebots/
+├── core/
+│   ├── config.py           # Settings from .env
+│   ├── personas.py         # Persona model + YAML loader
+│   ├── conversation.py     # In-memory chat history
+│   ├── circuit_breaker.py  # Failure detection & fallback
+│   ├── alerts.py           # Throttled admin notifications
+│   ├── calendar_client.py  # Google Calendar integration
+│   ├── claude_client.py    # Anthropic API wrapper
+│   ├── groq_client.py      # Groq API wrapper
+│   └── openrouter_client.py
+├── routers/
+│   ├── business.py         # Business message handler
+│   ├── panel.py            # Panel round orchestrator
+│   └── admin.py            # Admin commands
+└── __main__.py             # Entrypoint & DI wiring
+```
+
+---
+
+## 🖥 Deploy on VPS
+
+```bash
+sudo cp deploy/telegram-claude-bots.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-claude-bots
+journalctl -u telegram-claude-bots -f
+```
+
+---
+
+## 📝 License
+
+Private repository. All rights reserved.
