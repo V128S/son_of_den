@@ -132,7 +132,8 @@ async def amain() -> None:
         calendar_client=calendar_client,
     )
 
-    dp.include_routers(business_router, panel_router, admin_router)
+    # Panel router must be first to handle panel messages before business router
+    dp.include_routers(panel_router, business_router, admin_router)
 
     @dp.error()
     async def on_error(event: ErrorEvent) -> bool:
