@@ -59,6 +59,13 @@ class PersonaRegistry:
         return result
 
 
+def _resolve_templates(prompt: str, substitutions: dict[str, str]) -> str:
+    """Replace <<MARKER>> placeholders with actual content from the YAML."""
+    for marker, content in substitutions.items():
+        prompt = prompt.replace(f"<<{marker}>>", content)
+    return prompt
+
+
 def load_personas(path: Path) -> PersonaRegistry:
     text = path.read_text(encoding="utf-8")
     try:
@@ -68,17 +75,29 @@ def load_personas(path: Path) -> PersonaRegistry:
     if not isinstance(raw, dict):
         raise ValueError(f"Personas YAML must be a mapping, got {type(raw).__name__}")
 
+    # Collect template substitutions from YAML sections
+    substitutions: dict[str, str] = {}
+    for key, value in raw.get("base_prompts", {}).items():
+        substitutions[key.upper()] = str(value).strip()
+    for key, value in raw.get("shared", {}).items():
+        substitutions[key.upper()] = str(value).strip()
+
     try:
         parsed = _PersonasFile(**raw)
     except ValidationError as e:
         raise ValueError(f"Invalid personas YAML: {e}") from e
+
+    # Add panel common_system_prompt as a substitution
+    if parsed.panel.common_system_prompt:
+        common_resolved = _resolve_templates(parsed.panel.common_system_prompt, substitutions)
+        substitutions["COMMON_PANEL_PROMPT"] = common_resolved.strip()
 
     biz = parsed.agents.business_assistant
     business = Persona(
         id="business_assistant",
         name=biz.name,
         bot_token_env=biz.bot_token_env,
-        system_prompt=biz.system_prompt,
+        system_prompt=_resolve_templates(biz.system_prompt, substitutions),
         max_tokens=biz.max_tokens,
         fallback=biz.fallback,
         provider=biz.provider,
@@ -91,7 +110,7 @@ def load_personas(path: Path) -> PersonaRegistry:
             id=p.id,
             name=p.name,
             bot_token_env=p.bot_token_env,
-            system_prompt=p.system_prompt,
+            system_prompt=_resolve_templates(p.system_prompt, substitutions),
             max_tokens=p.max_tokens,
             fallback=p.fallback,
             provider=p.provider,

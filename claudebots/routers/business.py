@@ -31,6 +31,42 @@ _topic_contacts: dict[int, int] = {}
 _contact_data: dict[int, dict] = {}
 
 
+async def _build_system_prompt(
+    persona_prompt: str,
+    calendar_client: GoogleCalendarClient | None,
+    extra_context: str = "",
+) -> str:
+    """Build system prompt with optional calendar context appended."""
+    system_prompt = persona_prompt + extra_context
+
+    calendar_context = ""
+    if calendar_client:
+        try:
+            calendar_context = await calendar_client.get_upcoming_events_summary()
+        except Exception as e:
+            logger.warning("Failed to fetch calendar summary: %s", e)
+
+    if calendar_context:
+        tz = calendar_client.tz
+        now_dt = datetime.now(tz)
+        ru_days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        day_of_week = ru_days[now_dt.weekday()]
+        current_time_str = f"{now_dt.strftime('%d.%m.%Y %H:%M')} ({day_of_week})"
+
+        system_prompt += (
+            f"\n\nТЕКУЩЕЕ ВРЕМЯ:\n"
+            f"Сейчас на часах у Дениса: {current_time_str}.\n\n"
+            f"АКТУАЛЬНОЕ РАСПИСАНИЕ ДЕНИСА НА БЛИЖАЙШИЕ 10 ДНЕЙ:\n"
+            f"<schedule>\n{calendar_context}\n</schedule>\n\n"
+            f"ПРАВИЛА ИСПОЛЬЗОВАНИЯ РАСПИСАНИЯ:\n"
+            f"- Используй эти данные, чтобы отвечать на вопросы о свободном времени Дениса, встречах и планах.\n"
+            f"- Отвечай на вопросы вида 'когда мяско' или 'есть ли время на встречу' предельно точно и вежливо, основываясь ТОЛЬКО на этом расписании.\n"
+            f"- Если в расписании нет нужного события или занятости на конкретное время/день, аккуратно скажи, что информации об этом у тебя нет, и предложи оставить сообщение для Дениса."
+        )
+
+    return system_prompt
+
+
 async def _get_or_create_contact_topic(bot: Bot, chat_id: int, user_id: int, user_name: str) -> int | None:
     """Get existing topic for contact or create a new one."""
     if user_id in _contact_topics:
@@ -159,33 +195,9 @@ async def handle_business_message(
         except Exception as e:
             logger.debug("Failed to send notification to admin: %s", e)
 
-    # Fetch calendar context if client is provided
-    calendar_context = ""
-    if calendar_client:
-        try:
-            calendar_context = await calendar_client.get_upcoming_events_summary()
-        except Exception as e:
-            logger.warning("Failed to fetch calendar summary: %s", e)
-
-    # Build system prompt dynamically
-    system_prompt = persona.system_prompt
-    if calendar_context:
-        tz = calendar_client.tz
-        now_dt = datetime.now(tz)
-        ru_days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-        day_of_week = ru_days[now_dt.weekday()]
-        current_time_str = f"{now_dt.strftime('%d.%m.%Y %H:%M')} ({day_of_week})"
-
-        system_prompt += (
-            f"\n\nТЕКУЩЕЕ ВРЕМЯ:\n"
-            f"Сейчас на часах у Дениса: {current_time_str}.\n\n"
-            f"АКТУАЛЬНОЕ РАСПИСАНИЕ ДЕНИСА НА БЛИЖАЙШИЕ 10 ДНЕЙ:\n"
-            f"<schedule>\n{calendar_context}\n</schedule>\n\n"
-            f"ПРАВИЛА ИСПОЛЬЗОВАНИЯ РАСПИСАНИЯ:\n"
-            f"- Используй эти данные, чтобы отвечать на вопросы о свободном времени Дениса, встречах и планах.\n"
-            f"- Отвечай на вопросы вида 'когда мяско' или 'есть ли время на встречу' предельно точно и вежливо, основываясь ТОЛЬКО на этом расписании.\n"
-            f"- Если в расписании нет нужного события или занятости на конкретное время/день, аккуратно скажи, что информации об этом у тебя нет, и предложи оставить сообщение для Дениса."
-        )
+    system_prompt = await _build_system_prompt(
+        persona.system_prompt, calendar_client,
+    )
 
     try:
         await bot.send_chat_action(
@@ -331,44 +343,23 @@ async def handle_private_message(
                 f"- Если спрашивает о переписке - дай краткую сводку"
             )
 
-    # Fetch calendar context if client is provided
-    calendar_context = ""
-    if calendar_client:
-        try:
-            calendar_context = await calendar_client.get_upcoming_events_summary()
-        except Exception as e:
-            logger.warning("Failed to fetch calendar summary: %s", e)
-
-    # Build system prompt dynamically
-    system_prompt = persona.system_prompt
+    # Build system prompt with admin context and calendar
+    extra_context = ""
 
     # If admin is chatting (not in a contact topic), let bot know
     if is_admin and not contact_context:
-        system_prompt += (
+        extra_context += (
             f"\n\n🔴 ВНИМАНИЕ: ТЫ ОБЩАЕШЬСЯ С ДЕНИСОМ (ТВОИМ ВЛАДЕЛЬЦЕМ)!\n"
             f"- Отвечай кратко и по делу\n"
             f"- Это не клиент, это твой владелец\n"
             f"- Можешь давать отчеты, сводки, статистику по клиентам"
         )
 
-    system_prompt += contact_context
-    if calendar_context:
-        tz = calendar_client.tz
-        now_dt = datetime.now(tz)
-        ru_days = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
-        day_of_week = ru_days[now_dt.weekday()]
-        current_time_str = f"{now_dt.strftime('%d.%m.%Y %H:%M')} ({day_of_week})"
+    extra_context += contact_context
 
-        system_prompt += (
-            f"\n\nТЕКУЩЕЕ ВРЕМЯ:\n"
-            f"Сейчас на часах у Дениса: {current_time_str}.\n\n"
-            f"АКТУАЛЬНОЕ РАСПИСАНИЕ ДЕНИСА НА БЛИЖАЙШИЕ 10 ДНЕЙ:\n"
-            f"<schedule>\n{calendar_context}\n</schedule>\n\n"
-            f"ПРАВИЛА ИСПОЛЬЗОВАНИЯ РАСПИСАНИЯ:\n"
-            f"- Используй эти данные, чтобы отвечать на вопросы о свободном времени Дениса, встречах и планах.\n"
-            f"- Отвечай на вопросы вида 'когда мяско' или 'есть ли время на встречу' предельно точно и вежливо, основываясь ТОЛЬКО на этом расписании.\n"
-            f"- Если в расписании нет нужного события или занятости на конкретное время/день, аккуратно скажи, что информации об этом у тебя нет, и предложи оставить сообщение для Дениса."
-        )
+    system_prompt = await _build_system_prompt(
+        persona.system_prompt, calendar_client, extra_context,
+    )
 
     try:
         await bot.send_chat_action(

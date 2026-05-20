@@ -10,17 +10,13 @@ support prompt caching, so `usage["cache_read"]` is always 0.
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, TypedDict
+from typing import Any
 
 from groq import AsyncGroq
 
+from claudebots.core.ai_registry import Usage
+
 logger = logging.getLogger(__name__)
-
-
-class Usage(TypedDict):
-    input: int
-    output: int
-    cache_read: int
 
 
 class GroqClient:

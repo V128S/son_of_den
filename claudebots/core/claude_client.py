@@ -1,21 +1,15 @@
 import logging
 from collections.abc import AsyncIterator
-from typing import TypedDict
 
 from anthropic import APIStatusError, APITimeoutError, AsyncAnthropic, RateLimitError
 from anthropic.types import MessageParam, TextBlockParam
 
+from claudebots.core.ai_registry import Usage
 from claudebots.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
 from claudebots.core.config import Settings
 from claudebots.core.groq_client import GroqClient
 
 logger = logging.getLogger(__name__)
-
-
-class Usage(TypedDict):
-    input: int
-    output: int
-    cache_read: int
 
 
 _RETRYABLE = (RateLimitError, APIStatusError, APITimeoutError)

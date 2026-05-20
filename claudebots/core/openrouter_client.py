@@ -4,21 +4,18 @@ Drop-in alternative with the same `complete()` and `stream()` interface.
 OpenRouter exposes an OpenAI-compatible chat-completions API.
 """
 
+import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, TypedDict
+from typing import Any
 
 import httpx
+
+from claudebots.core.ai_registry import Usage
 
 logger = logging.getLogger(__name__)
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-
-class Usage(TypedDict):
-    input: int
-    output: int
-    cache_read: int
 
 
 class OpenRouterClient:
@@ -98,8 +95,6 @@ class OpenRouterClient:
                 data_str = line[6:]
                 if data_str == "[DONE]":
                     break
-
-                import json
 
                 try:
                     chunk = json.loads(data_str)

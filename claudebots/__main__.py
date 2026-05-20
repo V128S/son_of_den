@@ -154,6 +154,14 @@ async def amain() -> None:
                 await b.session.close()
             except Exception:
                 pass
+        # Close AI client sessions (e.g. OpenRouter httpx)
+        for name in ai_registry.providers:
+            client = ai_registry.get_client(name)
+            if hasattr(client, "close"):
+                try:
+                    await client.close()
+                except Exception:
+                    pass
 
     dp.shutdown.register(on_shutdown)
 

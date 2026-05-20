@@ -7,6 +7,7 @@ async def test_full_round_calls_each_persona_in_order(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -14,7 +15,6 @@ async def test_full_round_calls_each_persona_in_order(
         conv=conv,
         alerts=alerts_mock,
         panel_chat_id=-1001,
-        typing_sleep_seconds=0,
     )
 
     await runner.run_round("Тема: что делать с инфляцией?")
@@ -37,6 +37,7 @@ async def test_full_round_calls_each_persona_in_order(
 
 async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -44,7 +45,6 @@ async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_
         conv=conv,
         alerts=alerts_mock,
         panel_chat_id=-1001,
-        typing_sleep_seconds=0,
     )
 
     await runner.run_round("topic")
@@ -59,6 +59,7 @@ async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_
 
 async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -66,7 +67,6 @@ async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, 
         conv=conv,
         alerts=alerts_mock,
         panel_chat_id=-1001,
-        typing_sleep_seconds=0,
     )
 
     await runner.run_round("topic")
@@ -84,6 +84,7 @@ async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, 
 async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks, alerts_mock, monkeypatch):
     from claudebots.core.ai_registry import AIRegistry
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     client = MagicMock()
     side_effects = [
@@ -105,7 +106,6 @@ async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks
         conv=conv,
         alerts=alerts_mock,
         panel_chat_id=-1001,
-        typing_sleep_seconds=0,
     )
 
     await runner.run_round("topic")
@@ -125,6 +125,7 @@ async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks
 async def test_moderator_failure_sends_fallback(personas, conv, bot_mocks, alerts_mock, monkeypatch):
     from claudebots.core.ai_registry import AIRegistry
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     client = MagicMock()
     side_effects = ["ok1", "ok2", "ok3", "ok4", RuntimeError("mod fail")]
@@ -140,7 +141,6 @@ async def test_moderator_failure_sends_fallback(personas, conv, bot_mocks, alert
         conv=conv,
         alerts=alerts_mock,
         panel_chat_id=-1001,
-        typing_sleep_seconds=0,
     )
 
     await runner.run_round("topic")

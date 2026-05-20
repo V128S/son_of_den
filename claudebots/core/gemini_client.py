@@ -6,18 +6,14 @@ interface. Used as an alternative moderator provider.
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, TypedDict
+from typing import Any
 
 from google import genai
 from google.genai import types
 
+from claudebots.core.ai_registry import Usage
+
 logger = logging.getLogger(__name__)
-
-
-class Usage(TypedDict):
-    input: int
-    output: int
-    cache_read: int
 
 
 class GeminiClient:

@@ -55,12 +55,14 @@ async def test_reset_on_panel_chat_clears_panel_key(conv):
     assert conv.get("panel:-1001") == []
 
 
-async def test_cost_reports_usage(claude_mock):
-    claude_mock.usage = {"input": 1234, "output": 567, "cache_read": 890}
+async def test_cost_reports_usage(ai_registry_mock):
+    # Set some usage on the mock client
+    client = ai_registry_mock.get_client("claude")
+    client.usage = {"input": 1234, "output": 567, "cache_read": 890}
     msg = _msg(user_id=42, text="/cost")
     settings = MagicMock(admin_user_id=42)
 
-    await handle_cost(msg, claude_mock, settings)
+    await handle_cost(msg, ai_registry_mock, settings)
 
     msg.answer.assert_awaited_once()
     text = msg.answer.await_args.args[0]
