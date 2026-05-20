@@ -15,9 +15,9 @@
 
 ## ✨ What it does
 
-**Business Assistant** — auto-responds to Telegram messages on behalf of the owner. Understands context, reads Google Calendar in real time, and handles any question politely while the owner is busy.
+**Business Assistant** — auto-responds to Telegram messages on behalf of the owner. Understands context, reads Google Calendar in real time, and handles any question politely while the owner is busy. Incoming messages and bot replies are mirrored to the admin in a dedicated forum topic per contact.
 
-**Panel Discussion** — 5 bots that debate any topic you throw at them: Analyst, Skeptic, Creative, Pragmatist, and a Moderator who synthesises everything into a clean takeaway.
+**Panel Discussion** — 5 bots that debate any topic you throw at them: Analyst, Skeptic, Creative, Pragmatist, and a Moderator who synthesises everything into a clean takeaway. Questions are automatically categorised and routed to thematic forum threads.
 
 ---
 
@@ -29,7 +29,7 @@ One Python process · One asyncio loop · 6 Telegram bots
 ┌─────────────────┐    ┌──────────────────────────────────┐
 │  Business Bot   │    │          Panel Bots               │
 │  (auto-reply)   │    │  Analyst · Skeptic · Creative     │
-│                 │    │  Pragmatist · Moderator           │
+│  + private DM   │    │  Pragmatist · Moderator           │
 └────────┬────────┘    └──────────────┬───────────────────┘
          │                            │
          └────────────┬───────────────┘
@@ -53,6 +53,22 @@ One Python process · One asyncio loop · 6 Telegram bots
 - `GoogleCalendarClient` — live schedule fetching with 60s cache
 - `PersonaRegistry` — hot-reloadable YAML persona definitions
 - `AlertSender` — throttled admin notifications
+- `AIRegistry` — multi-model routing (Claude · Groq · OpenRouter · Gemini)
+
+---
+
+## 🧠 Multi-Model Architecture
+
+Each persona is assigned a specific AI provider, configured in `personas.yaml`:
+
+| Provider key | Backend | Used for |
+|---|---|---|
+| `claude` | Anthropic Claude | Business assistant (streaming) |
+| `groq` | Groq (llama/mixtral) | Analyst, Skeptic |
+| `openrouter_deepseek` | DeepSeek via OpenRouter | Creative, Pragmatist |
+| `openrouter_owl` | Owl Alpha via OpenRouter | *(configurable)* |
+| `openrouter_gemini` | Gemini Lite via OpenRouter | Topic categorisation |
+| `gemini` | Google Gemini direct | Moderator *(optional)* |
 
 ---
 
@@ -84,22 +100,30 @@ Key variables:
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `ANTHROPIC_API_KEY` | Anthropic API key (for business assistant) |
+| `GROQ_API_KEY` | Groq API key (for analyst & skeptic) |
+| `OPENROUTER_API_KEY` | OpenRouter key (for creative, pragmatist, topic analysis) |
+| `GEMINI_API_KEY` | Google Gemini key *(optional — for moderator)* |
 | `BUSINESS_BOT_TOKEN` | Business auto-responder bot |
-| `PANEL_BOT_*_TOKEN` | 5 panel bot tokens |
-| `PANEL_CHAT_ID` | Group chat ID (negative number) |
+| `PANEL_BOT_*_TOKEN` | 5 panel bot tokens (analyst, skeptic, creative, pragmatist, moderator) |
+| `PANEL_CHAT_ID` | Forum group chat ID (negative number) |
 | `ADMIN_USER_ID` | Your Telegram user ID |
 | `GOOGLE_SERVICE_ACCOUNT_FILE` | Path to Google credentials JSON *(optional)* |
+| `GROQ_MODEL` | Groq model name (default: `llama-3.3-70b-versatile`) |
+| `DEEPSEEK_MODEL` | DeepSeek model via OpenRouter |
+| `GEMINI_MODEL` | Gemini model name |
 
 ### 3. Set up bots
 
 **Business bot:**
 - In BotFather: `/setprivacy → Disable`
 - In Telegram: *Settings → Telegram Business → Chatbots* → connect the bot
+- The bot will also respond to direct private messages from the admin
 
 **Panel bots:**
-- Add all 5 to your panel group as **admins**
+- Add all 5 to your panel group (must be a **Forum** supergroup) as **admins**
 - Get the group ID via `@RawDataBot` → put in `PANEL_CHAT_ID`
+- Topics are created automatically per discussion category
 
 ### 4. Run
 
@@ -108,6 +132,18 @@ uv run python -m claudebots
 ```
 
 You should see: `Starting polling on 6 bots`
+
+---
+
+## 📩 Contact Topics (Business Bot)
+
+When the business bot receives a message from a contact, it:
+
+1. Automatically creates a **forum topic** named `💬 ContactName` in your private chat with the bot
+2. Mirrors every incoming message as `📩 Name:\n<text>`
+3. Mirrors every auto-reply as `🤖 Ответ:\n<text>`
+
+You can also **chat directly with the bot** inside a contact's topic — it will understand that you are the owner (Denis) and provide a brief conversation summary or answer your questions about that contact.
 
 ---
 
@@ -159,16 +195,18 @@ claudebots/
 ├── core/
 │   ├── config.py           # Settings from .env
 │   ├── personas.py         # Persona model + YAML loader
+│   ├── ai_registry.py      # Multi-model client router
 │   ├── conversation.py     # In-memory chat history
 │   ├── circuit_breaker.py  # Failure detection & fallback
 │   ├── alerts.py           # Throttled admin notifications
 │   ├── calendar_client.py  # Google Calendar integration
-│   ├── claude_client.py    # Anthropic API wrapper
+│   ├── claude_client.py    # Anthropic API wrapper (streaming)
 │   ├── groq_client.py      # Groq API wrapper
-│   └── openrouter_client.py
+│   ├── gemini_client.py    # Google Gemini wrapper
+│   └── openrouter_client.py # OpenRouter wrapper
 ├── routers/
-│   ├── business.py         # Business message handler
-│   ├── panel.py            # Panel round orchestrator
+│   ├── business.py         # Business + private message handler
+│   ├── panel.py            # Panel round orchestrator + forum topics
 │   └── admin.py            # Admin commands
 └── __main__.py             # Entrypoint & DI wiring
 ```
