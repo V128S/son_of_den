@@ -237,7 +237,7 @@ class FeedMonitor:
         best_url = best_title = best_text = None
         best_score = -1
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             for channel in self._channels:
                 for url, title, text, pub_ts in await self._fetch_entries(client, channel):
                     if url in seen_set:
