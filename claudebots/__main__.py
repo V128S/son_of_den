@@ -19,6 +19,7 @@ from claudebots.core.personas import load_personas
 from claudebots.routers.admin import PersonaHolder, admin_router
 from claudebots.routers.business import business_router, start_digest_scheduler, init_business_state
 from claudebots.routers.panel import panel_router, start_revival_scheduler, init_panel_state
+from claudebots.core.feed_monitor import start_feed_monitor
 from claudebots.core import state as _state
 
 logger = logging.getLogger(__name__)
@@ -237,6 +238,27 @@ async def amain() -> None:
             digest_time=settings.contact_digest_time,
         )
 
+    # Start feed monitor (auto-topics from Telegram channel RSS)
+    feed_task: asyncio.Task[None] | None = None
+    feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
+    if feed_channels:
+        feed_task = start_feed_monitor(
+            channels=feed_channels,
+            interests=settings.feed_interests,
+            max_per_day=settings.feed_max_per_day,
+            min_score=settings.feed_min_score,
+            check_interval_seconds=int(settings.feed_check_interval_hours * 3600),
+            state_path=settings.state_file,
+            ai_registry=ai_registry,
+            bots=bots,
+            personas=persona_holder.registry,
+            conv=conv,
+            alerts=alerts,
+            panel_chat_id=settings.panel_chat_id,
+        )
+    else:
+        logger.info("Feed monitor disabled (FEED_CHANNELS not set)")
+
     try:
         await dp.start_polling(*bots.values())
     finally:
@@ -255,6 +277,12 @@ async def amain() -> None:
             digest_task.cancel()
             try:
                 await digest_task
+            except asyncio.CancelledError:
+                pass
+        if feed_task is not None:
+            feed_task.cancel()
+            try:
+                await feed_task
             except asyncio.CancelledError:
                 pass
 
