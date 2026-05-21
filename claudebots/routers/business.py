@@ -212,7 +212,18 @@ async def _on_business_message(
 
 
 
-@business_router.message(F.text & F.chat.type == "private")
+def _is_panel_cmd(text: str | None) -> bool:
+    """Return True only for /panel … or панель: … commands."""
+    if not text:
+        return False
+    t = text.strip().lower()
+    return t.startswith("/panel") or t.startswith("панель:")
+
+
+@business_router.message(
+    F.text.func(_is_panel_cmd),
+    F.chat.type == "private",
+)
 async def _on_panel_command(
     message: Message,
     bot: Bot,
@@ -228,8 +239,6 @@ async def _on_panel_command(
     if message.from_user is None or message.from_user.id != settings.admin_user_id:
         return
     text = (message.text or "").strip()
-    if not (text.lower().startswith("/panel") or text.lower().startswith("панель:")):
-        return
 
     # Extract topic
     if text.lower().startswith("/panel"):
@@ -464,6 +473,21 @@ async def handle_business_message(
         logger.debug("read_business_message skipped: %s", e)
 
 
+def _build_recent_contacts_summary(max_contacts: int = 5, max_msgs: int = 3) -> str:
+    """Build a brief summary of recent contacts for the owner system prompt."""
+    if not _contact_data:
+        return ""
+    summary = "\n\nПОСЛЕДНИЕ КОНТАКТЫ (краткая справка):\n"
+    recent = list(_contact_data.items())[-max_contacts:]
+    for uid, data in recent:
+        msgs = data["messages"][-max_msgs:]
+        summary += f"\n• {data['name']}:\n"
+        for m in msgs:
+            role = "Контакт" if m["role"] == "contact" else "Бот"
+            summary += f"  [{m['time']}] {role}: {m['text'][:120]}\n"
+    return summary
+
+
 async def handle_private_message(
     *,
     message: Message,
@@ -493,7 +517,11 @@ async def handle_private_message(
     # Check if this is admin chatting in a contact's topic
     is_admin = bool(message.from_user and admin_user_id and message.from_user.id == admin_user_id)
     contact_context = ""
-    admin_thread_id: int | None = None
+
+    logger.info(
+        "handle_private_message: chat_id=%s type=%s thread=%s is_admin=%s",
+        message.chat.id, getattr(message.chat, "type", "?"), thread_id, is_admin,
+    )
 
     if is_admin and thread_id and thread_id in _topic_contacts:
         contact_id = _topic_contacts[thread_id]
@@ -514,32 +542,35 @@ async def handle_private_message(
                 f"- Если спрашивает о переписке - дай краткую сводку"
             )
 
-    # Owner private mode: admin writing directly in private (not in a contact topic)
-    is_owner_private = (
-        is_admin
-        and getattr(message.chat, "type", None) == "private"
-        and not contact_context
+    # Owner mode: admin writing anywhere (private DM or supergroup topic)
+    # NOTE: private DM doesn't support forum topics — topics only work in supergroups.
+    # If _topic_contacts is empty after restart and Denis writes in a topic,
+    # we still respond in owner mode (no contact context, but bot answers).
+    chat_type = getattr(message.chat, "type", None)
+    is_owner_mode = is_admin and (
+        chat_type == "private"
+        or (chat_type == "supergroup" and thread_id)  # supergroup topic
     )
 
-    if is_owner_private:
-        # Dedicated owner system prompt — no business-secretary framing
-        system_prompt = await _build_system_prompt(OWNER_SYSTEM_PROMPT, calendar_client)
-    else:
-        extra_context = ""
-        if is_admin and not contact_context:
-            extra_context += (
-                f"\n\n🔴 ВНИМАНИЕ: ТЫ ОБЩАЕШЬСЯ С ДЕНИСОМ (ТВОИМ ВЛАДЕЛЬЦЕМ)!\n"
-                f"- Отвечай кратко и по делу\n"
-                f"- Это не клиент, это твой владелец\n"
-                f"- Можешь давать отчеты, сводки, статистику по клиентам"
+    if is_owner_mode:
+        # Build owner system prompt — always use OWNER_SYSTEM_PROMPT as base
+        if contact_context:
+            # Denis is in a known contact topic — add contact context
+            owner_prompt = await _build_system_prompt(
+                OWNER_SYSTEM_PROMPT, calendar_client, contact_context
             )
-        extra_context += contact_context
-        system_prompt = await _build_system_prompt(
-            persona.system_prompt, calendar_client, extra_context,
-        )
+        else:
+            # No specific contact context — add brief recent contacts summary
+            contacts_summary = _build_recent_contacts_summary()
+            owner_prompt = await _build_system_prompt(
+                OWNER_SYSTEM_PROMPT + contacts_summary, calendar_client
+            )
+        system_prompt = owner_prompt
+    else:
+        system_prompt = await _build_system_prompt(persona.system_prompt, calendar_client)
 
-    # ── Owner private: simple complete() + send_message (no placeholder/stream) ──
-    if is_owner_private:
+    # ── Owner mode: simple complete() + send_message (no placeholder/stream) ──
+    if is_owner_mode:
         try:
             await bot.send_chat_action(
                 chat_id=message.chat.id,
@@ -565,6 +596,7 @@ async def handle_private_message(
             await bot.send_message(
                 chat_id=message.chat.id,
                 text=response,
+                message_thread_id=message.message_thread_id,  # stay in the same topic
                 parse_mode=None,
             )
         except Exception as e:
