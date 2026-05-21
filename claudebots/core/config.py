@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     personas_path: Path = Path("personas.yaml")
 
+    # File that persists topic mappings across restarts (prevents duplicate forum topics).
+    # Use an absolute path if the working directory might change.
+    state_file: Path = Path("bot_state.json")
+
     # How often the panel bots spontaneously revive past discussions (hours).
     # Set to 0 to disable the revival scheduler entirely.
     panel_revival_interval_hours: float = 2.0

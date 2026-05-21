@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 
 from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.personas import PersonaRegistry
+from claudebots.core import state as _state
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,42 @@ _contact_data: dict[int, dict] = {}
 # Today's message count per contact (reset after daily digest)
 _contact_today: dict[int, int] = {}
 
+# Path to the bot state JSON file — set by init_business_state() at startup
+_biz_state_path: Path | None = None
+
 # Owner's personal topics in panel group: topic_name -> thread_id
 _admin_topics: dict[str, int] = {}
+
+def _persist_business_state() -> None:
+    """Save contact and admin topic state to disk. No-op if path not set."""
+    if _biz_state_path is None:
+        return
+    _state.update(_biz_state_path, {
+        "contact_topics": _state.encode_int_keys(_contact_topics),
+        "admin_topics": _admin_topics,
+    })
+
+
+def init_business_state(path: Path, data: dict) -> None:
+    """Restore contact/admin topic state from persisted data. Call once at startup."""
+    global _biz_state_path
+    _biz_state_path = path
+
+    raw_contacts = data.get("contact_topics", {})
+    restored_contacts = _state.decode_int_keys(raw_contacts)
+    _contact_topics.update(restored_contacts)
+    # Rebuild reverse mapping
+    _topic_contacts.update({v: k for k, v in restored_contacts.items()})
+
+    raw_admin = data.get("admin_topics", {})
+    if isinstance(raw_admin, dict):
+        _admin_topics.update(raw_admin)
+
+    logger.info(
+        "Business state restored: %d contacts, %d admin topics",
+        len(_contact_topics), len(_admin_topics),
+    )
+
 
 # System prompt when the owner (Denis) writes directly in private chat
 OWNER_SYSTEM_PROMPT = """\
@@ -105,6 +141,7 @@ async def _get_or_create_contact_topic(bot: Bot, chat_id: int, user_id: int, use
         _contact_topics[user_id] = topic.message_thread_id
         _topic_contacts[topic.message_thread_id] = user_id  # Reverse mapping
         logger.info("Created topic %d for user %s (%d)", topic.message_thread_id, user_name, user_id)
+        _persist_business_state()
         return topic.message_thread_id
     except Exception as e:
         logger.warning("Failed to create topic for %s: %s", user_name, e)
@@ -197,6 +234,7 @@ async def _route_owner_to_category(
             )
             _admin_topics[category] = current_thread_id
             logger.info("Renamed topic %d → %r", current_thread_id, category)
+            _persist_business_state()
             return current_thread_id
         except Exception as e:
             logger.warning("edit_forum_topic failed: %s", e)
@@ -207,6 +245,7 @@ async def _route_owner_to_category(
         forum_topic = await bot.create_forum_topic(chat_id=chat_id, name=category)
         _admin_topics[category] = forum_topic.message_thread_id
         logger.info("Created admin topic: %s (id=%d)", category, forum_topic.message_thread_id)
+        _persist_business_state()
         return forum_topic.message_thread_id
     except Exception as e:
         logger.warning("create_forum_topic failed: %s", e)
@@ -540,6 +579,7 @@ async def _rename_topic_async(bot: Bot, chat_id: int, thread_id: int, name: str)
         await bot.edit_forum_topic(chat_id=chat_id, message_thread_id=thread_id, name=name)
         _admin_topics[name] = thread_id
         logger.info("Renamed topic %d → %r", thread_id, name)
+        _persist_business_state()
     except Exception as e:
         logger.warning("edit_forum_topic failed (%d → %r): %s", thread_id, name, e)
 

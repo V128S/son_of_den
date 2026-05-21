@@ -26,3 +26,7 @@ personas.yaml
 
 run_bot.sh
 bot.log
+
+# Runtime state (persisted topic mappings — machine-local)
+bot_state.json
+bot_state.tmp

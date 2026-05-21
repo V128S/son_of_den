@@ -3,6 +3,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from aiogram import Bot, F, Router
 from aiogram.types import Message
@@ -11,6 +12,7 @@ from claudebots.core.ai_registry import AIRegistry
 from claudebots.core.alerts import AlertSender
 from claudebots.core.conversation import ConversationStore
 from claudebots.core.personas import PersonaRegistry
+from claudebots.core import state as _state
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,9 @@ _panel_topics: dict[int, str] = {}
 
 # Last thread used in a panel round — revival posts here by default
 _last_thread_id: int | None = None
+
+# Path to the bot state JSON file — set by init_panel_state() at startup
+_state_path: Path | None = None
 
 # Discussion settings
 MAX_DISCUSSION_MESSAGES = 4  # Shorter discussions, more focused
@@ -78,6 +83,43 @@ def clean_markdown(text: str) -> str:
     # Clean up extra whitespace
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def _persist_panel_state() -> None:
+    """Save current panel state to disk. No-op if state path not set."""
+    if _state_path is None:
+        return
+    _state.update(_state_path, {
+        "panel_topics": _state.encode_int_keys(_panel_topics),
+        "tasks_thread_id": _tasks_thread_id,
+        "panel_memories": list(_panel_memories),
+    })
+
+
+def init_panel_state(path: Path, data: dict) -> None:
+    """Restore panel topic state from persisted data.  Call once at startup."""
+    global _state_path, _tasks_thread_id
+    _state_path = path
+
+    raw_topics = data.get("panel_topics", {})
+    restored = _state.decode_int_keys(raw_topics)
+    _panel_topics.update(restored)
+
+    tasks_tid = data.get("tasks_thread_id")
+    if isinstance(tasks_tid, int):
+        _tasks_thread_id = tasks_tid
+
+    mems = data.get("panel_memories", [])
+    if isinstance(mems, list):
+        _panel_memories.extend(m for m in mems if isinstance(m, str))
+        # Trim to max
+        while len(_panel_memories) > PANEL_MEMORY_MAX:
+            _panel_memories.pop(0)
+
+    logger.info(
+        "Panel state restored: %d topics, tasks_thread=%s, %d memories",
+        len(_panel_topics), _tasks_thread_id, len(_panel_memories),
+    )
 
 
 # Fixed topic categories for the panel — prevents the AI from using
@@ -155,6 +197,7 @@ async def _analyze_topic_and_get_thread(
             thread_id = forum_topic.message_thread_id
             _panel_topics[thread_id] = topic_name
             logger.info("Created panel topic: %s (id=%d)", topic_name, thread_id)
+            _persist_panel_state()
             return thread_id
         except Exception as e:
             logger.warning("Failed to create panel forum topic %r: %s", topic_name, e)
@@ -180,6 +223,7 @@ async def _get_or_create_tasks_thread(bot: "Bot", chat_id: int) -> int | None:
         topic = await bot.create_forum_topic(chat_id=chat_id, name="✅ Задачи")
         _tasks_thread_id = topic.message_thread_id
         logger.info("Created panel tasks topic (id=%d)", _tasks_thread_id)
+        _persist_panel_state()
         return _tasks_thread_id
     except Exception as e:
         logger.warning("Failed to create panel tasks topic: %s", e)
@@ -450,6 +494,7 @@ class PanelRoundRunner:
                     "Panel memory saved (%d/%d): %r",
                     len(_panel_memories), PANEL_MEMORY_MAX, memory[:60],
                 )
+                _persist_panel_state()
         except Exception as e:
             logger.warning("Panel memory extraction failed: %s", e)
 

@@ -17,8 +17,9 @@ from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
 from claudebots.routers.admin import PersonaHolder, admin_router
-from claudebots.routers.business import business_router, start_digest_scheduler
-from claudebots.routers.panel import panel_router, start_revival_scheduler
+from claudebots.routers.business import business_router, start_digest_scheduler, init_business_state
+from claudebots.routers.panel import panel_router, start_revival_scheduler, init_panel_state
+from claudebots.core import state as _state
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,12 @@ async def amain() -> None:
 
     registry = load_personas(settings.personas_path)
     persona_holder = PersonaHolder(registry=registry)
+
+    # Load persisted state (topic mappings) so we don't create duplicate forum topics
+    # after a restart.  Done early so routers know existing thread IDs.
+    _persisted = _state.load(settings.state_file)
+    init_panel_state(settings.state_file, _persisted)
+    init_business_state(settings.state_file, _persisted)
 
     # Initialize AI clients for multi-model architecture
     clients: dict[str, AIClient] = {}
