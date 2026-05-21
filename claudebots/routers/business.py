@@ -211,6 +211,75 @@ async def _on_business_message(
     )
 
 
+
+@business_router.message(F.text & F.chat.type == "private")
+async def _on_panel_command(
+    message: Message,
+    bot: Bot,
+    bots: dict[str, Bot],
+    ai_registry: AIRegistry,
+    conv: ConversationStore,
+    personas: PersonaRegistry,
+    alerts: AlertSender,
+    settings,
+    calendar_client: "GoogleCalendarClient | None" = None,
+) -> None:
+    """Handle /panel <topic> command from owner in private — trigger panel discussion."""
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    text = (message.text or "").strip()
+    if not (text.lower().startswith("/panel") or text.lower().startswith("панель:")):
+        return
+
+    # Extract topic
+    if text.lower().startswith("/panel"):
+        topic = text[6:].strip()
+    else:
+        topic = text[len("панель:"):].strip()
+
+    if not topic:
+        await message.reply(
+            "Укажи тему для обсуждения:\n"
+            "/panel Что делать с маркетингом?\n"
+            "или\n"
+            "панель: Как масштабировать продажи?"
+        )
+        return
+
+    await message.reply(f"🎬 Запускаю обсуждение: {topic[:80]}")
+
+    from claudebots.routers.panel import (
+        _analyze_topic_and_get_thread,
+        PanelRoundRunner,
+        _active_round,
+        _processing_lock,
+    )
+    import asyncio as _asyncio
+
+    moderator_bot = bots.get("moderator")
+    if not moderator_bot:
+        await message.reply("❌ Модератор не настроен")
+        return
+
+    thread_id = await _analyze_topic_and_get_thread(
+        bot=moderator_bot,
+        chat_id=settings.panel_chat_id,
+        question=topic,
+        ai_registry=ai_registry,
+    )
+    logger.info("Panel via /panel command: thread_id=%s topic=%r", thread_id, topic)
+
+    runner = PanelRoundRunner(
+        bots=bots,
+        personas=personas,
+        ai_registry=ai_registry,
+        conv=conv,
+        alerts=alerts,
+        panel_chat_id=settings.panel_chat_id,
+        thread_id=thread_id,
+    )
+    _asyncio.create_task(runner.run_round(topic))
+
 @business_router.message(F.text & F.chat.type.in_({"private", "supergroup"}))
 async def _on_private_message(
     message: Message,
