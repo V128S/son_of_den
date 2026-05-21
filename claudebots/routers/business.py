@@ -121,65 +121,99 @@ _OWNER_CATEGORIES = [
 ]
 
 
+async def _classify_owner_category(question: str, ai_registry: AIRegistry) -> str:
+    """Classify owner's message into one of _OWNER_CATEGORIES. Returns category name."""
+    try:
+        client = ai_registry.get_client("openrouter_gemini")
+        cats = "\n".join(f"- {c}" for c in _OWNER_CATEGORIES)
+        raw = await client.complete(
+            system="Классификатор. Возвращай только одну строку из предложенного списка без изменений.",
+            messages=[{"role": "user", "content": (
+                f"Выбери ОДНУ категорию из списка для сообщения.\n"
+                f"Список:\n{cats}\n\n"
+                f"Сообщение: {question[:150]}\n\n"
+                "Ответь СТРОГО одной строкой из списка, слово в слово."
+            )}],
+            max_tokens=12,
+        )
+        candidate = raw.strip().strip('"').strip("'").split("\n")[0].strip()
+        for cat in _OWNER_CATEGORIES:
+            if cat in candidate or candidate in cat:
+                logger.info("Owner category: %r (raw=%r)", cat, candidate)
+                return cat
+        logger.info("Owner category defaulted to Разное (raw=%r)", candidate)
+        return "📝 Разное"
+    except Exception as e:
+        logger.warning("Owner category classification failed: %s", e)
+        return "📝 Разное"
+
+
+async def _route_owner_to_category(
+    bot: Bot,
+    chat_id: int,
+    current_thread_id: int | None,
+    category: str,
+) -> int | None:
+    """
+    Ensure the owner's message ends up in the right category topic.
+
+    Strategy:
+    - If the category topic already exists → route there, close the question-text topic.
+    - If not → rename the current (question-text) topic to the category name.
+    - If no current topic → create a new one with the category name.
+
+    Returns the thread_id where the response should be sent.
+    """
+    existing_tid = _admin_topics.get(category)
+
+    if existing_tid is not None:
+        # Category topic already exists
+        if current_thread_id and current_thread_id != existing_tid:
+            # Close the auto-created question-text topic so it doesn't clutter the forum
+            try:
+                await bot.close_forum_topic(chat_id=chat_id, message_thread_id=current_thread_id)
+                logger.info("Closed question-text topic %d → routing to %r (%d)",
+                            current_thread_id, category, existing_tid)
+            except Exception as e:
+                logger.debug("close_forum_topic failed (ok): %s", e)
+        return existing_tid
+
+    # Category topic does not exist yet
+    if current_thread_id:
+        # Rename the auto-created question-text topic to the category name
+        try:
+            await bot.edit_forum_topic(
+                chat_id=chat_id,
+                message_thread_id=current_thread_id,
+                name=category,
+            )
+            _admin_topics[category] = current_thread_id
+            logger.info("Renamed topic %d → %r", current_thread_id, category)
+            return current_thread_id
+        except Exception as e:
+            logger.warning("edit_forum_topic failed: %s", e)
+            # Fall through to create a new topic
+
+    # Create a brand-new category topic (main chat or rename failed)
+    try:
+        forum_topic = await bot.create_forum_topic(chat_id=chat_id, name=category)
+        _admin_topics[category] = forum_topic.message_thread_id
+        logger.info("Created admin topic: %s (id=%d)", category, forum_topic.message_thread_id)
+        return forum_topic.message_thread_id
+    except Exception as e:
+        logger.warning("create_forum_topic failed: %s", e)
+        return current_thread_id  # last resort: respond in current thread
+
+
+# Keep old name as alias for backwards compat (used in _on_panel_command import path)
 async def _analyze_admin_topic_and_get_thread(
     bot: Bot,
     chat_id: int,
     question: str,
     ai_registry: AIRegistry,
 ) -> int | None:
-    """Pick one fixed category for the owner message and return its thread_id."""
-    try:
-        client = ai_registry.get_client("openrouter_gemini")
-
-        cats = "\n".join(f"- {c}" for c in _OWNER_CATEGORIES)
-        prompt = (
-            f"Выбери ОДНУ категорию из списка для сообщения.\n"
-            f"Список:\n{cats}\n\n"
-            f"Сообщение: {question[:150]}\n\n"
-            "Ответь СТРОГО одной строкой из списка, слово в слово."
-        )
-
-        raw = await client.complete(
-            system="Классификатор. Возвращай только одну строку из предложенного списка без изменений.",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=12,
-        )
-        candidate = raw.strip().strip('"').strip("'").split("\n")[0].strip()
-
-        # Match against the fixed list (fuzzy: check if any category is contained)
-        topic_name = "📝 Разное"  # safe default
-        for cat in _OWNER_CATEGORIES:
-            if cat in candidate or candidate in cat:
-                topic_name = cat
-                break
-
-        logger.info("Admin topic selected: %r (raw=%r)", topic_name, candidate)
-
-        # Return existing thread if already created
-        if topic_name in _admin_topics:
-            return _admin_topics[topic_name]
-
-        # Also check by thread_id (case-insensitive name match)
-        for name, tid in _admin_topics.items():
-            if name.lower() == topic_name.lower():
-                return tid
-
-        # Create new forum topic
-        try:
-            forum_topic = await bot.create_forum_topic(
-                chat_id=chat_id,
-                name=topic_name,
-            )
-            _admin_topics[topic_name] = forum_topic.message_thread_id
-            logger.info("Created admin topic: %s (id=%d)", topic_name, forum_topic.message_thread_id)
-            return forum_topic.message_thread_id
-        except Exception as e:
-            logger.warning("Failed to create admin forum topic: %s", e)
-            return None
-
-    except Exception as e:
-        logger.warning("Admin topic analysis failed: %s", e)
-        return None
+    category = await _classify_owner_category(question, ai_registry)
+    return await _route_owner_to_category(bot, chat_id, None, category)
 
 
 @business_router.business_message(F.text)
@@ -546,40 +580,35 @@ async def handle_private_message(
     chat_type = getattr(message.chat, "type", None)
     is_owner_mode = is_admin and chat_type in ("private", "supergroup")
 
-    # For supergroup main thread (no topic): classify message and route to category topic.
+    # For supergroup: classify every owner message and ensure it lands in the right
+    # category topic. Telegram Forums auto-create topics with the message text as the
+    # name — we intercept that and rename/route to the correct fixed category.
     # For private DM: forum topics not supported — respond inline.
-    # For specific topic: stay in that topic.
     target_thread_id: int | None = message.message_thread_id  # default: same as incoming
 
-    if is_owner_mode and chat_type == "supergroup" and not thread_id:
-        # Denis wrote in the main/general chat — classify and route to a category topic
-        routed = await _analyze_admin_topic_and_get_thread(
-            bot=bot,
-            chat_id=message.chat.id,
-            question=text,
-            ai_registry=ai_registry,
-        )
-        if routed:
-            target_thread_id = routed
-            # Re-key conversation to the target topic so history is per-category
-            new_key = f"private:{message.chat.id}:{routed}"
-            conv.add(new_key, "user", text)
-            key = new_key
-            logger.info("Owner: routed to category topic %d", routed)
-            # Show brief redirect in main chat so Denis knows where to look
-            category_name = next(
-                (name for name, tid in _admin_topics.items() if tid == routed),
-                "топик",
+    if is_owner_mode and chat_type == "supergroup":
+        # Skip routing only if we already know this thread is a contact topic
+        is_contact_topic = bool(thread_id and thread_id in _topic_contacts)
+
+        if not is_contact_topic:
+            # Classify and route to the fixed category topic
+            category = await _classify_owner_category(text, ai_registry)
+            routed = await _route_owner_to_category(
+                bot=bot,
+                chat_id=message.chat.id,
+                current_thread_id=message.message_thread_id,
+                category=category,
             )
-            try:
-                await bot.send_message(
-                    chat_id=message.chat.id,
-                    text=f"↗️ {category_name}",
-                    message_thread_id=None,
-                    parse_mode=None,
-                )
-            except Exception:
-                pass
+            if routed and routed != thread_id:
+                target_thread_id = routed
+                # Re-key conversation to the target topic for per-category history
+                new_key = f"private:{message.chat.id}:{routed}"
+                conv.add(new_key, "user", text)
+                key = new_key
+                logger.info("Owner: routed %r → topic %d", category, routed)
+            elif routed:
+                target_thread_id = routed  # same topic (already correct category)
+                logger.info("Owner: stays in %r (topic %d)", category, routed)
 
     if is_owner_mode:
         # Build owner system prompt — always use OWNER_SYSTEM_PROMPT as base
