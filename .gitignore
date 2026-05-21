@@ -23,3 +23,6 @@ docs/
 
 # Persona prompts — proprietary logic, keep private
 personas.yaml
+
+run_bot.sh
+bot.log
