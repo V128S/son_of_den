@@ -26,8 +26,13 @@ class ConversationStore:
             del self._store[key]
 
     def trim(self, key: str, keep_last: int) -> None:
+        """Remove oldest messages, keeping at most *keep_last* entries.
+
+        Mutates the deque in-place to avoid losing the shared reference and
+        to sidestep any snapshot-and-replace race with concurrent readers.
+        """
         current = self._store.get(key)
         if current is None:
             return
-        kept = list(current)[-keep_last:]
-        self._store[key] = deque(kept, maxlen=self._max)
+        while len(current) > max(keep_last, 0):
+            current.popleft()
