@@ -388,7 +388,7 @@ async def _on_panel_command(
         if not t.cancelled() and t.exception() else None
     )
 
-@business_router.message(F.text & F.chat.type.in_({"private", "supergroup"}))
+@business_router.message(F.text & F.chat.type.in_({"private", "supergroup"}) & ~F.forward_from_chat & ~F.forward_origin)
 async def _on_private_message(
     message: Message,
     bot: Bot,
