@@ -30,6 +30,25 @@ _topic_contacts: dict[int, int] = {}
 # Store contact info: user_id -> {name, messages: [{role, text, time}]}
 _contact_data: dict[int, dict] = {}
 
+# Owner's personal topics in panel group: topic_name -> thread_id
+_admin_topics: dict[str, int] = {}
+
+# System prompt when the owner (Denis) writes directly in private chat
+OWNER_SYSTEM_PROMPT = """\
+Ты личный AI-ассистент Дениса — он пишет тебе напрямую как владелец.
+
+ЗАДАЧА:
+- Отвечай кратко и по делу, как умный личный помощник.
+- Помогай с любыми задачами: вопросы, анализ, идеи, планирование, сводки по клиентам.
+- Если Денис спрашивает о клиентах или переписке — давай конкретную информацию.
+
+СТИЛЬ:
+- Русский язык, прямая речь без лишних формальностей.
+- Обычно 2–5 предложений, если нет запроса на развёрнутый ответ.
+- НЕ предлагай "оставить сообщение Денису" — ты УЖЕ разговариваешь с Денисом.
+- НЕ веди себя как секретарь-автоответчик для клиентов.
+"""
+
 
 async def _build_system_prompt(
     persona_prompt: str,
@@ -87,6 +106,65 @@ async def _get_or_create_contact_topic(bot: Bot, chat_id: int, user_id: int, use
         return None
 
 
+async def _analyze_admin_topic_and_get_thread(
+    bot: Bot,
+    chat_id: int,
+    question: str,
+    ai_registry: AIRegistry,
+) -> int | None:
+    """Analyze owner's question topic and get or create a forum thread in the panel group."""
+    try:
+        client = ai_registry.get_client("openrouter_gemini")
+
+        topics_context = ""
+        if _admin_topics:
+            topics_context = "\n\nСуществующие топики:\n"
+            for name in _admin_topics:
+                topics_context += f"- {name}\n"
+
+        prompt = (
+            f"Вопрос владельца: {question}\n\n"
+            f"{topics_context}\n"
+            "Задача: определи ОБЩУЮ тему этого вопроса (2-4 слова + эмодзи).\n\n"
+            "Правила:\n"
+            "- Если тема совпадает с существующим топиком — верни ТОЧНО его название\n"
+            "- Если тема новая — придумай короткое название (2-4 слова) + подходящий эмодзи в начале\n"
+            "- Делай категории широкими: '📋 Задачи', '💡 Идеи', '📊 Аналитика', '🗓 Планирование'\n"
+            "- Формат: 'эмодзи Название'\n\n"
+            "Верни ТОЛЬКО название топика, без объяснений."
+        )
+
+        topic_name = await client.complete(
+            system="Ты помощник для категоризации вопросов. Отвечай кратко, только название топика.",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=50,
+        )
+        topic_name = topic_name.strip().strip('"').strip("'")
+
+        # Check if topic already exists (case-insensitive)
+        for name, tid in _admin_topics.items():
+            if name.lower() == topic_name.lower():
+                logger.info("Using existing admin topic: %s (id=%d)", name, tid)
+                return tid
+
+        # Create new topic
+        try:
+            forum_topic = await bot.create_forum_topic(
+                chat_id=chat_id,
+                name=topic_name[:128],
+            )
+            _admin_topics[topic_name] = forum_topic.message_thread_id
+            logger.info("Created admin topic: %s (id=%d)", topic_name, forum_topic.message_thread_id)
+            return forum_topic.message_thread_id
+        except Exception as e:
+            logger.warning("Failed to create admin forum topic: %s", e)
+            return None
+
+    except Exception as e:
+        logger.warning("Admin topic analysis failed: %s", e)
+        return None
+
+
 @business_router.business_message(F.text)
 async def _on_business_message(
     message: Message,
@@ -125,6 +203,7 @@ async def _on_private_message(
     personas: PersonaRegistry,
     alerts: AlertSender,
     settings,
+    bots: dict[str, Bot],
     calendar_client: GoogleCalendarClient | None = None,
 ) -> None:
     """Handle direct messages to the business bot in private chat or supergroup with topics."""
@@ -140,6 +219,8 @@ async def _on_private_message(
         personas=personas,
         alerts=alerts,
         admin_user_id=settings.admin_user_id,
+        panel_chat_id=settings.panel_chat_id,
+        panel_bot=bots.get("moderator"),
         calendar_client=calendar_client,
     )
 
@@ -306,6 +387,8 @@ async def handle_private_message(
     personas: PersonaRegistry,
     alerts: AlertSender,
     admin_user_id: int | None = None,
+    panel_chat_id: int | None = None,
+    panel_bot: Bot | None = None,
     calendar_client: GoogleCalendarClient | None = None,
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
@@ -322,8 +405,10 @@ async def handle_private_message(
     conv.add(key, "user", text)
 
     # Check if this is admin chatting in a contact's topic
-    is_admin = message.from_user and admin_user_id and message.from_user.id == admin_user_id
+    is_admin = bool(message.from_user and admin_user_id and message.from_user.id == admin_user_id)
     contact_context = ""
+    admin_thread_id: int | None = None
+
     if is_admin and thread_id and thread_id in _topic_contacts:
         contact_id = _topic_contacts[thread_id]
         if contact_id in _contact_data:
@@ -343,23 +428,38 @@ async def handle_private_message(
                 f"- Если спрашивает о переписке - дай краткую сводку"
             )
 
-    # Build system prompt with admin context and calendar
-    extra_context = ""
-
-    # If admin is chatting (not in a contact topic), let bot know
-    if is_admin and not contact_context:
-        extra_context += (
-            f"\n\n🔴 ВНИМАНИЕ: ТЫ ОБЩАЕШЬСЯ С ДЕНИСОМ (ТВОИМ ВЛАДЕЛЬЦЕМ)!\n"
-            f"- Отвечай кратко и по делу\n"
-            f"- Это не клиент, это твой владелец\n"
-            f"- Можешь давать отчеты, сводки, статистику по клиентам"
-        )
-
-    extra_context += contact_context
-
-    system_prompt = await _build_system_prompt(
-        persona.system_prompt, calendar_client, extra_context,
+    # Owner private mode: admin writing directly in private (not in a contact topic)
+    is_owner_private = (
+        is_admin
+        and getattr(message.chat, "type", None) == "private"
+        and not contact_context
     )
+
+    if is_owner_private:
+        # Dedicated owner system prompt — no business-secretary framing
+        system_prompt = await _build_system_prompt(OWNER_SYSTEM_PROMPT, calendar_client)
+
+        # Create/find topic in panel group for organizing the conversation
+        if panel_chat_id and panel_bot:
+            admin_thread_id = await _analyze_admin_topic_and_get_thread(
+                bot=panel_bot,
+                chat_id=panel_chat_id,
+                question=text,
+                ai_registry=ai_registry,
+            )
+    else:
+        extra_context = ""
+        if is_admin and not contact_context:
+            extra_context += (
+                f"\n\n🔴 ВНИМАНИЕ: ТЫ ОБЩАЕШЬСЯ С ДЕНИСОМ (ТВОИМ ВЛАДЕЛЬЦЕМ)!\n"
+                f"- Отвечай кратко и по делу\n"
+                f"- Это не клиент, это твой владелец\n"
+                f"- Можешь давать отчеты, сводки, статистику по клиентам"
+            )
+        extra_context += contact_context
+        system_prompt = await _build_system_prompt(
+            persona.system_prompt, calendar_client, extra_context,
+        )
 
     try:
         await bot.send_chat_action(
@@ -424,3 +524,18 @@ async def handle_private_message(
         logger.warning("Final edit failed: %s", e)
 
     conv.add(key, "assistant", response)
+
+    # Log owner's private message to the panel topic for organized archiving
+    if is_owner_private and admin_thread_id is not None and panel_chat_id and panel_bot:
+        try:
+            panel_text = (
+                f"👤 <b>Денис:</b> {text[:400]}\n\n"
+                f"🤖 <b>Ответ:</b>\n{response[:400]}"
+            )
+            await panel_bot.send_message(
+                panel_chat_id,
+                panel_text,
+                message_thread_id=admin_thread_id,
+            )
+        except Exception as e:
+            logger.debug("Failed to log owner message to panel topic: %s", e)
