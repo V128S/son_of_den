@@ -23,6 +23,47 @@ from claudebots.routers.panel import panel_router
 logger = logging.getLogger(__name__)
 
 
+async def _seize_sessions(bots: dict) -> None:
+    """Call Telegram close() to evict any competing bot process."""
+    import urllib.request, ssl, json as _json
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    for b in bots.values():
+        try:
+            tok = b.token
+            url = f"https://api.telegram.org/bot{tok}/close"
+            req = urllib.request.Request(url, method='POST')
+            with urllib.request.urlopen(req, timeout=6, context=ctx):
+                pass
+        except Exception:
+            pass
+
+
+async def _session_guardian(bots: dict) -> None:
+    """Background task: evict competing instances every 40 s."""
+    while True:
+        await asyncio.sleep(40)
+        logger.debug("Session guardian: evicting competing instances")
+        await asyncio.to_thread(_seize_sessions_sync, bots)
+
+
+def _seize_sessions_sync(bots: dict) -> None:
+    import urllib.request, ssl
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    for b in bots.values():
+        try:
+            tok = b.token
+            url = f"https://api.telegram.org/bot{tok}/close"
+            req = urllib.request.Request(url, method='POST')
+            with urllib.request.urlopen(req, timeout=6, context=ctx):
+                pass
+        except Exception:
+            pass
+
+
 async def amain() -> None:
     settings = Settings()
     logging.basicConfig(
@@ -166,6 +207,15 @@ async def amain() -> None:
     dp.shutdown.register(on_shutdown)
 
     logger.info("Starting polling on %d bots", len(bots))
+
+    # Evict competing server instances at startup
+    logger.info("Evicting competing bot sessions...")
+    _seize_sessions_sync(bots)
+    await asyncio.sleep(0.5)
+
+    # Start background guardian to maintain session dominance
+    asyncio.create_task(_session_guardian(bots))
+
     await dp.start_polling(*bots.values())
 
 
