@@ -43,3 +43,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     personas_path: Path = Path("personas.yaml")
+
+    # How often the panel bots spontaneously revive past discussions (hours).
+    # Set to 0 to disable the revival scheduler entirely.
+    panel_revival_interval_hours: float = 2.0

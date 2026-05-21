@@ -23,9 +23,16 @@ _processing_lock = asyncio.Lock()
 # Cache for topic_id -> topic_name mapping
 _panel_topics: dict[int, str] = {}
 
+# Last thread used in a panel round — revival posts here by default
+_last_thread_id: int | None = None
+
 # Discussion settings
 MAX_DISCUSSION_MESSAGES = 4  # Shorter discussions, more focused
 DELAY_BETWEEN_MESSAGES = 1.5  # Delay between different bot messages
+
+# Revival settings
+REVIVAL_INTERVAL_SECONDS = 7_200  # Default: every 2 hours
+REVIVAL_JITTER_SECONDS = 1_800    # ±30 min randomness
 
 # Instruction appended to every speaker turn — extracted to avoid repetition
 _SPEAKER_TURN_INSTRUCTION = (
@@ -35,6 +42,18 @@ _SPEAKER_TURN_INSTRUCTION = (
     "- Спорь только если видишь реальную проблему\n"
     "- Учитывай весь контекст обсуждения\n"
     "- Без markdown"
+)
+
+# Revival-specific instructions — casual, spontaneous feel
+_REVIVAL_INITIATOR_INSTRUCTION = (
+    "{name}, у тебя появилась новая мысль по прошлой теме — как будто только что дошло. "
+    "Вырази её коротко и неформально, 1-2 предложения. "
+    "Не объясняй, что «возвращаешься к теме» — просто скажи мысль. Без markdown."
+)
+
+_REVIVAL_RESPONDER_INSTRUCTION = (
+    "{name}, ты слышишь мысль коллеги и реагируешь — поддерживаешь или уточняешь. "
+    "1-2 предложения, по делу. Без markdown."
 )
 
 
@@ -196,8 +215,41 @@ class PanelRoundRunner:
             await self.alerts.send(f"panel_{persona.id}", f"{type(e).__name__}: {e}")
             return False
 
+    async def _speak_revival(self, persona, key: str, instruction: str) -> bool:
+        """Have a persona deliver a short revival message. Returns True if successful."""
+        speaker_bot = self.bots[persona.id]
+
+        messages = list(self.conv.get(key))
+        messages.append({"role": "user", "content": instruction.format(name=persona.name)})
+
+        try:
+            client = self.ai_registry.get_client(persona.provider)
+            response = await client.complete(
+                system=persona.system_prompt,
+                messages=messages,
+                max_tokens=120,  # Shorter than a regular turn
+            )
+
+            clean_response = clean_markdown(response)
+            if not clean_response.strip():
+                logger.warning("Revival persona %s returned empty response", persona.id)
+                return False
+
+            await self._send(speaker_bot, clean_response)
+            self.conv.add(key, "assistant", f"[{persona.name}]: {clean_response}")
+            return True
+
+        except Exception as e:
+            logger.warning("Revival persona %s (%s) failed: %s", persona.id, persona.provider, e)
+            return False
+
     async def run_round(self, topic: str) -> None:
+        global _last_thread_id
         key = self._key()
+
+        # Track thread for revival
+        if self.thread_id is not None:
+            _last_thread_id = self.thread_id
 
         # Keep conversation history, just add new topic
         # This allows bots to reference previous discussions
@@ -288,6 +340,141 @@ class PanelRoundRunner:
             await self.alerts.send("panel_moderator", f"{type(e).__name__}: {e}")
             await self._send(moderator_bot, mod.fallback)
 
+
+    async def run_revival(self) -> None:
+        """Spontaneous 2-3 message continuation of the last discussion.
+
+        No moderator summary — feels like bots picked up the conversation
+        naturally after a break.
+        """
+        key = self._key()
+
+        history = self.conv.get(key)
+        if not history:
+            logger.info("Revival skipped — no conversation history yet")
+            return
+
+        speakers = list(self.personas.panel_speakers)
+        if not speakers:
+            return
+
+        # Shuffle so different speakers initiate each time
+        random.shuffle(speakers)
+
+        # Randomly 2 or 3 messages (2 is more common)
+        num_messages = random.choices([2, 3], weights=[2, 1])[0]
+        participants = speakers[:num_messages]
+
+        logger.info(
+            "Revival starting: %d messages in thread=%s by [%s]",
+            num_messages,
+            self.thread_id,
+            ", ".join(p.id for p in participants),
+        )
+
+        for i, persona in enumerate(participants):
+            instruction = (
+                _REVIVAL_INITIATOR_INSTRUCTION if i == 0
+                else _REVIVAL_RESPONDER_INSTRUCTION
+            )
+            success = await self._speak_revival(persona, key, instruction)
+            if success and i < len(participants) - 1:
+                await asyncio.sleep(DELAY_BETWEEN_MESSAGES)
+
+        logger.info("Revival complete")
+
+
+# ---------------------------------------------------------------------------
+# Revival scheduler
+# ---------------------------------------------------------------------------
+
+async def _revival_loop(
+    bots: dict[str, Bot],
+    personas: PersonaRegistry,
+    ai_registry: AIRegistry,
+    conv: ConversationStore,
+    alerts: AlertSender,
+    panel_chat_id: int,
+    interval_seconds: int,
+) -> None:
+    """Background task: spontaneously continue past discussions every ~N hours."""
+    global _active_round, _last_thread_id
+
+    # Delay first revival so it doesn't fire right after startup
+    jitter = random.randint(-REVIVAL_JITTER_SECONDS, REVIVAL_JITTER_SECONDS)
+    initial_delay = max(300, interval_seconds + jitter)
+    logger.info("Revival scheduler: first revival in %.0f min", initial_delay / 60)
+    await asyncio.sleep(initial_delay)
+
+    while True:
+        try:
+            # Skip if a manual round is currently running
+            if _active_round and not _active_round.done():
+                logger.info("Revival skipped — active panel round in progress")
+            elif not _panel_topics and _last_thread_id is None:
+                logger.info("Revival skipped — no panel topics created yet")
+            else:
+                # Use last active thread; fall back to a random known topic
+                thread_id = _last_thread_id
+                if thread_id is None and _panel_topics:
+                    thread_id = random.choice(list(_panel_topics.keys()))
+
+                runner = PanelRoundRunner(
+                    bots=bots,
+                    personas=personas,
+                    ai_registry=ai_registry,
+                    conv=conv,
+                    alerts=alerts,
+                    panel_chat_id=panel_chat_id,
+                    thread_id=thread_id,
+                )
+                await runner.run_revival()
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Revival loop error: %s", e)
+            await alerts.send("panel_revival", f"{type(e).__name__}: {e}")
+
+        # Sleep until next revival
+        jitter = random.randint(-REVIVAL_JITTER_SECONDS, REVIVAL_JITTER_SECONDS)
+        sleep_time = max(300, interval_seconds + jitter)
+        logger.info("Revival scheduler: next revival in %.0f min", sleep_time / 60)
+        await asyncio.sleep(sleep_time)
+
+
+def start_revival_scheduler(
+    bots: dict[str, Bot],
+    personas: PersonaRegistry,
+    ai_registry: AIRegistry,
+    conv: ConversationStore,
+    alerts: AlertSender,
+    panel_chat_id: int,
+    interval_seconds: int = REVIVAL_INTERVAL_SECONDS,
+) -> "asyncio.Task[None]":
+    """Create and return the revival background task.
+
+    Call this once from __main__ after the event loop is running.
+    Cancel the returned task on shutdown.
+    """
+    task: asyncio.Task[None] = asyncio.create_task(
+        _revival_loop(bots, personas, ai_registry, conv, alerts, panel_chat_id, interval_seconds)
+    )
+    task.add_done_callback(
+        lambda t: logger.warning("Revival loop raised: %s", t.exception())
+        if not t.cancelled() and t.exception() else None
+    )
+    logger.info(
+        "Revival scheduler started (interval=%.0f min ± %.0f min)",
+        interval_seconds / 60,
+        REVIVAL_JITTER_SECONDS / 60,
+    )
+    return task
+
+
+# ---------------------------------------------------------------------------
+# Panel message handler
+# ---------------------------------------------------------------------------
 
 @panel_router.message(F.text & F.chat.type.in_({"supergroup", "group"}))
 async def _on_panel_message(

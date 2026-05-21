@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from claudebots.routers.panel import PanelRoundRunner
 
 
@@ -149,3 +151,149 @@ async def test_moderator_failure_sends_fallback(personas, conv, bot_mocks, alert
     closing_call = bot_mocks["moderator"].send_message.await_args_list[-1]
     sent_text = closing_call.args[1] if len(closing_call.args) > 1 else closing_call.kwargs["text"]
     assert "mod fallback" in sent_text
+
+
+# ---------------------------------------------------------------------------
+# Revival tests
+# ---------------------------------------------------------------------------
+
+async def test_revival_skipped_when_no_history(
+    personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
+):
+    """run_revival() does nothing when conversation history is empty."""
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
+    runner = PanelRoundRunner(
+        bots=bot_mocks,
+        personas=personas,
+        ai_registry=ai_registry_mock,
+        conv=conv,
+        alerts=alerts_mock,
+        panel_chat_id=-1001,
+        thread_id=42,
+    )
+
+    await runner.run_revival()
+
+    # No bot should have sent anything
+    for name in ("analyst", "skeptic", "creative", "pragmatist", "moderator"):
+        bot_mocks[name].send_message.assert_not_called()
+
+
+async def test_revival_sends_2_or_3_messages(
+    personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
+):
+    """run_revival() sends 2 or 3 short messages; no moderator summary."""
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
+
+    # Seed conversation history so revival has something to work with
+    conv.add("panel:-1001", "user", "Тема: рост продаж в Q4")
+    conv.add("panel:-1001", "assistant", "[Analyst]: нужно увеличить рекламный бюджет")
+
+    runner = PanelRoundRunner(
+        bots=bot_mocks,
+        personas=personas,
+        ai_registry=ai_registry_mock,
+        conv=conv,
+        alerts=alerts_mock,
+        panel_chat_id=-1001,
+        thread_id=42,
+    )
+
+    await runner.run_revival()
+
+    # Count how many panel speaker bots sent messages (not moderator)
+    speaker_sends = sum(
+        bot_mocks[name].send_message.await_count
+        for name in ("analyst", "skeptic", "creative", "pragmatist")
+    )
+    assert speaker_sends in (2, 3), f"Expected 2 or 3 revival messages, got {speaker_sends}"
+
+    # Moderator must NOT send anything during revival
+    bot_mocks["moderator"].send_message.assert_not_called()
+
+
+async def test_revival_uses_shorter_max_tokens(
+    personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
+):
+    """Revival calls complete() with max_tokens=120 (shorter than regular turns)."""
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
+
+    conv.add("panel:-1001", "user", "Тема: оптимизация процессов")
+    conv.add("panel:-1001", "assistant", "[Creative]: попробуй автоматизацию")
+
+    client = ai_registry_mock.get_client("claude")
+
+    runner = PanelRoundRunner(
+        bots=bot_mocks,
+        personas=personas,
+        ai_registry=ai_registry_mock,
+        conv=conv,
+        alerts=alerts_mock,
+        panel_chat_id=-1001,
+        thread_id=99,
+    )
+
+    await runner.run_revival()
+
+    # All revival calls must use max_tokens=120
+    for call in client.complete.await_args_list:
+        assert call.kwargs.get("max_tokens") == 120, (
+            f"Expected max_tokens=120 in revival call, got {call.kwargs.get('max_tokens')}"
+        )
+
+
+async def test_revival_messages_go_to_correct_thread(
+    personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
+):
+    """Revival messages are sent to the thread_id specified on the runner."""
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
+
+    conv.add("panel:-1001", "user", "Тема: маркетинг")
+
+    runner = PanelRoundRunner(
+        bots=bot_mocks,
+        personas=personas,
+        ai_registry=ai_registry_mock,
+        conv=conv,
+        alerts=alerts_mock,
+        panel_chat_id=-1001,
+        thread_id=777,
+    )
+
+    await runner.run_revival()
+
+    # Every send_message call must target thread 777
+    for name in ("analyst", "skeptic", "creative", "pragmatist"):
+        for call in bot_mocks[name].send_message.await_args_list:
+            assert call.kwargs.get("message_thread_id") == 777, (
+                f"Bot {name} sent to wrong thread: {call.kwargs}"
+            )
+
+
+async def test_revival_history_updated_after_messages(
+    personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
+):
+    """Conversation history grows by exactly the number of revival messages sent."""
+    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
+
+    conv.add("panel:-1001", "user", "Тема: инвестиции")
+    initial_len = len(conv.get("panel:-1001"))
+
+    runner = PanelRoundRunner(
+        bots=bot_mocks,
+        personas=personas,
+        ai_registry=ai_registry_mock,
+        conv=conv,
+        alerts=alerts_mock,
+        panel_chat_id=-1001,
+        thread_id=1,
+    )
+
+    await runner.run_revival()
+
+    history = conv.get("panel:-1001")
+    added = len(history) - initial_len
+    # Only assistant messages should be added (no user prompt injected)
+    assert added in (2, 3), f"Expected 2 or 3 new history entries, got {added}"
+    for msg in history[initial_len:]:
+        assert msg["role"] == "assistant"

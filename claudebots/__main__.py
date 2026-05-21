@@ -18,7 +18,7 @@ from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
 from claudebots.routers.admin import PersonaHolder, admin_router
 from claudebots.routers.business import business_router
-from claudebots.routers.panel import panel_router
+from claudebots.routers.panel import panel_router, start_revival_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +199,19 @@ async def amain() -> None:
 
     logger.info("Starting polling on %d bots", len(bots))
 
+    # Start revival scheduler (disabled when interval == 0)
+    revival_task: asyncio.Task[None] | None = None
+    if settings.panel_revival_interval_hours > 0:
+        revival_task = start_revival_scheduler(
+            bots=bots,
+            personas=persona_holder.registry,
+            ai_registry=ai_registry,
+            conv=conv,
+            alerts=alerts,
+            panel_chat_id=settings.panel_chat_id,
+            interval_seconds=int(settings.panel_revival_interval_hours * 3600),
+        )
+
     # Evict competing server instances at startup
     logger.info("Evicting competing bot sessions...")
     _seize_sessions_sync(bots)
@@ -215,6 +228,12 @@ async def amain() -> None:
             await guardian_task
         except asyncio.CancelledError:
             pass
+        if revival_task is not None:
+            revival_task.cancel()
+            try:
+                await revival_task
+            except asyncio.CancelledError:
+                pass
 
 
 def main() -> None:
