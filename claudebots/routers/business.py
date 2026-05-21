@@ -37,6 +37,9 @@ _contact_data: dict[int, dict] = {}
 # Today's message count per contact (reset after daily digest)
 _contact_today: dict[int, int] = {}
 
+# Per-user creation locks — prevent duplicate topics from burst messages
+_create_topic_locks: dict[int, asyncio.Lock] = {}
+
 # Path to the bot state JSON file — set by init_business_state() at startup
 _biz_state_path: Path | None = None
 
@@ -128,24 +131,36 @@ async def _build_system_prompt(
 
 
 async def _get_or_create_contact_topic(bot: Bot, chat_id: int, user_id: int, user_name: str) -> int | None:
-    """Get existing topic for contact or create a new one."""
+    """Get existing topic for contact or create a new one.
+
+    Uses a per-user asyncio.Lock to prevent duplicate topics when burst
+    messages from the same contact arrive before the first topic is saved.
+    """
+    # Fast path — no lock needed if already cached
     if user_id in _contact_topics:
         return _contact_topics[user_id]
 
-    try:
-        # Create new topic for this contact
-        topic = await bot.create_forum_topic(
-            chat_id=chat_id,
-            name=f"💬 {user_name[:64]}",  # Telegram limits topic name to 128 chars
-        )
-        _contact_topics[user_id] = topic.message_thread_id
-        _topic_contacts[topic.message_thread_id] = user_id  # Reverse mapping
-        logger.info("Created topic %d for user %s (%d)", topic.message_thread_id, user_name, user_id)
-        _persist_business_state()
-        return topic.message_thread_id
-    except Exception as e:
-        logger.warning("Failed to create topic for %s: %s", user_name, e)
-        return None
+    # Ensure exactly one coroutine creates the topic for this user_id
+    if user_id not in _create_topic_locks:
+        _create_topic_locks[user_id] = asyncio.Lock()
+    async with _create_topic_locks[user_id]:
+        # Re-check inside the lock — another coroutine may have created it
+        if user_id in _contact_topics:
+            return _contact_topics[user_id]
+
+        try:
+            topic = await bot.create_forum_topic(
+                chat_id=chat_id,
+                name=f"💬 {user_name[:64]}",  # Telegram limits topic name to 128 chars
+            )
+            _contact_topics[user_id] = topic.message_thread_id
+            _topic_contacts[topic.message_thread_id] = user_id  # Reverse mapping
+            logger.info("Created topic %d for user %s (%d)", topic.message_thread_id, user_name, user_id)
+            _persist_business_state()
+            return topic.message_thread_id
+        except Exception as e:
+            logger.warning("Failed to create topic for %s: %s", user_name, e)
+            return None
 
 
 # Fixed set of owner topic categories — keeps the panel organised without
@@ -363,7 +378,11 @@ async def _on_panel_command(
         thread_id=thread_id,
     )
     import asyncio as _asyncio
-    _asyncio.create_task(runner.run_round(topic))
+    _task = _asyncio.create_task(runner.run_round(topic))
+    _task.add_done_callback(
+        lambda t: logger.warning("Panel round task raised: %s", t.exception())
+        if not t.cancelled() and t.exception() else None
+    )
 
 @business_router.message(F.text & F.chat.type.in_({"private", "supergroup"}))
 async def _on_private_message(
@@ -675,13 +694,21 @@ async def handle_private_message(
             key = new_key
             logger.info("Owner: routing %r → topic %d (closing %d)", category, existing_tid, thread_id)
             # Close the question-text topic after we respond in the correct one
-            _aio.create_task(_close_topic_async(bot, message.chat.id, thread_id))
+            _t = _aio.create_task(_close_topic_async(bot, message.chat.id, thread_id))
+            _t.add_done_callback(
+                lambda t: logger.warning("close_topic task raised: %s", t.exception())
+                if not t.cancelled() and t.exception() else None
+            )
         else:
             # No existing category topic — respond here and rename this topic
             target_thread_id = thread_id
             logger.info("Owner: responding in %d, will rename → %r", thread_id, category)
             # Rename happens AFTER the response so Denis sees the answer first
-            _aio.create_task(_rename_topic_async(bot, message.chat.id, thread_id, category))
+            _t = _aio.create_task(_rename_topic_async(bot, message.chat.id, thread_id, category))
+            _t.add_done_callback(
+                lambda t: logger.warning("rename_topic task raised: %s", t.exception())
+                if not t.cancelled() and t.exception() else None
+            )
 
     if is_owner_mode:
         # Build owner system prompt — always use OWNER_SYSTEM_PROMPT as base
