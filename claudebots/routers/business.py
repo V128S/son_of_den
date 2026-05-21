@@ -542,15 +542,44 @@ async def handle_private_message(
                 f"- Если спрашивает о переписке - дай краткую сводку"
             )
 
-    # Owner mode: admin writing anywhere (private DM or supergroup topic)
-    # NOTE: private DM doesn't support forum topics — topics only work in supergroups.
-    # If _topic_contacts is empty after restart and Denis writes in a topic,
-    # we still respond in owner mode (no contact context, but bot answers).
+    # Owner mode: admin writing in private DM or any supergroup (including main thread)
     chat_type = getattr(message.chat, "type", None)
-    is_owner_mode = is_admin and (
-        chat_type == "private"
-        or (chat_type == "supergroup" and thread_id)  # supergroup topic
-    )
+    is_owner_mode = is_admin and chat_type in ("private", "supergroup")
+
+    # For supergroup main thread (no topic): classify message and route to category topic.
+    # For private DM: forum topics not supported — respond inline.
+    # For specific topic: stay in that topic.
+    target_thread_id: int | None = message.message_thread_id  # default: same as incoming
+
+    if is_owner_mode and chat_type == "supergroup" and not thread_id:
+        # Denis wrote in the main/general chat — classify and route to a category topic
+        routed = await _analyze_admin_topic_and_get_thread(
+            bot=bot,
+            chat_id=message.chat.id,
+            question=text,
+            ai_registry=ai_registry,
+        )
+        if routed:
+            target_thread_id = routed
+            # Re-key conversation to the target topic so history is per-category
+            new_key = f"private:{message.chat.id}:{routed}"
+            conv.add(new_key, "user", text)
+            key = new_key
+            logger.info("Owner: routed to category topic %d", routed)
+            # Show brief redirect in main chat so Denis knows where to look
+            category_name = next(
+                (name for name, tid in _admin_topics.items() if tid == routed),
+                "топик",
+            )
+            try:
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=f"↗️ {category_name}",
+                    message_thread_id=None,
+                    parse_mode=None,
+                )
+            except Exception:
+                pass
 
     if is_owner_mode:
         # Build owner system prompt — always use OWNER_SYSTEM_PROMPT as base
@@ -575,6 +604,7 @@ async def handle_private_message(
             await bot.send_chat_action(
                 chat_id=message.chat.id,
                 action="typing",
+                message_thread_id=target_thread_id,
             )
         except Exception as e:
             logger.debug("chat_action skipped: %s", e)
@@ -596,7 +626,7 @@ async def handle_private_message(
             await bot.send_message(
                 chat_id=message.chat.id,
                 text=response,
-                message_thread_id=message.message_thread_id,  # stay in the same topic
+                message_thread_id=target_thread_id,
                 parse_mode=None,
             )
         except Exception as e:
