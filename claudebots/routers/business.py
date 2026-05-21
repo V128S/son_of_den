@@ -116,30 +116,47 @@ async def _analyze_admin_topic_and_get_thread(
     try:
         client = ai_registry.get_client("openrouter_gemini")
 
-        topics_context = ""
+        existing = ""
         if _admin_topics:
-            topics_context = "\n\nСуществующие топики:\n"
+            existing = "Существующие топики (вернуть один из них, если подходит):\n"
             for name in _admin_topics:
-                topics_context += f"- {name}\n"
+                existing += f"  {name}\n"
 
         prompt = (
-            f"Вопрос владельца: {question}\n\n"
-            f"{topics_context}\n"
-            "Задача: определи ОБЩУЮ тему этого вопроса (2-4 слова + эмодзи).\n\n"
-            "Правила:\n"
-            "- Если тема совпадает с существующим топиком — верни ТОЧНО его название\n"
-            "- Если тема новая — придумай короткое название (2-4 слова) + подходящий эмодзи в начале\n"
-            "- Делай категории широкими: '📋 Задачи', '💡 Идеи', '📊 Аналитика', '🗓 Планирование'\n"
-            "- Формат: 'эмодзи Название'\n\n"
-            "Верни ТОЛЬКО название топика, без объяснений."
+            f"{existing}\n"
+            f"Сообщение: {question[:200]}\n\n"
+            "Верни ОДНО из существующих топиков (точно как написано) или придумай НОВЫЙ.\n"
+            "Формат нового топика: ОДИН эмодзи + пробел + 2-3 слова (не более 25 символов итого).\n"
+            "Примеры: '📋 Задачи', '💡 Идеи', '📊 Аналитика', '🗓 Планирование', '👥 Клиенты', '💰 Финансы'\n"
+            "ТОЛЬКО название, без кавычек, без пояснений, без точки в конце."
         )
 
-        topic_name = await client.complete(
-            system="Ты помощник для категоризации вопросов. Отвечай кратко, только название топика.",
+        raw = await client.complete(
+            system=(
+                "Ты классификатор тем. "
+                "Возвращаешь ТОЛЬКО одно короткое название категории (не более 25 символов): "
+                "эмодзи + пробел + 2-3 слова. Никаких объяснений."
+            ),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=50,
+            max_tokens=20,
         )
-        topic_name = topic_name.strip().strip('"').strip("'")
+        topic_name = raw.strip().strip('"').strip("'").split("\n")[0].strip()
+
+        # Validate: must be short enough to be a category name, not a question
+        if len(topic_name) > 40 or not topic_name:
+            # Fallback: use a generic category based on question keywords
+            kw = question[:30].lower()
+            if any(w in kw for w in ("клиент", "покупат", "заказ")):
+                topic_name = "👥 Клиенты"
+            elif any(w in kw for w in ("деньг", "финанс", "бюджет", "цен")):
+                topic_name = "💰 Финансы"
+            elif any(w in kw for w in ("задач", "сделат", "нужно", "надо")):
+                topic_name = "📋 Задачи"
+            elif any(w in kw for w in ("иде", "вариант", "придум")):
+                topic_name = "💡 Идеи"
+            else:
+                topic_name = "📊 Разное"
+            logger.info("Topic name too long, using fallback: %s", topic_name)
 
         # Check if topic already exists (case-insensitive)
         for name, tid in _admin_topics.items():
