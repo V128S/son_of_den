@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 _RSS_BASE = "https://rsshub.app/telegram/channel/{channel}"
 _FEED_SEEN_MAX = 500
-_MIN_INTERVAL_SECONDS = 4 * 3600  # minimum gap between auto-triggered rounds
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 
@@ -162,6 +161,7 @@ class FeedMonitor:
         max_per_day: int,
         min_score: int,
         check_interval_seconds: int,
+        min_interval_seconds: int,
         state_path: Path,
         ai_registry: AIRegistry,
         scoring_provider: str,
@@ -176,6 +176,7 @@ class FeedMonitor:
         self._max_per_day = max_per_day
         self._min_score = min_score
         self._check_interval = check_interval_seconds
+        self._min_interval = min_interval_seconds
         self._state_path = state_path
         self._ai_registry = ai_registry
         self._scoring_provider = scoring_provider
@@ -206,9 +207,9 @@ class FeedMonitor:
             return
 
         now = datetime.now(timezone.utc).timestamp()
-        if now - feed_last_run_ts < _MIN_INTERVAL_SECONDS:
+        if now - feed_last_run_ts < self._min_interval:
             logger.debug("Feed monitor: min interval not elapsed (%.0f s remaining)",
-                         _MIN_INTERVAL_SECONDS - (now - feed_last_run_ts))
+                         self._min_interval - (now - feed_last_run_ts))
             return
 
         seen_set = set(feed_seen)
@@ -319,6 +320,7 @@ def start_feed_monitor(
     max_per_day: int,
     min_score: int,
     check_interval_seconds: int,
+    min_interval_seconds: int,
     state_path: Path,
     ai_registry: AIRegistry,
     bots: dict,
@@ -339,6 +341,7 @@ def start_feed_monitor(
         max_per_day=max_per_day,
         min_score=min_score,
         check_interval_seconds=check_interval_seconds,
+        min_interval_seconds=min_interval_seconds,
         state_path=state_path,
         ai_registry=ai_registry,
         scoring_provider=scoring_provider,

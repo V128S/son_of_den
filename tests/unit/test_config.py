@@ -53,3 +53,4 @@ def test_feed_defaults(monkeypatch):
     assert s.feed_max_per_day == 2
     assert s.feed_check_interval_hours == 1.0
     assert s.feed_min_score == 7
+    assert s.feed_min_interval_hours == 4.0

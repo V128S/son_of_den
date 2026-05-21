@@ -151,6 +151,7 @@ def _make_monitor(tmp_path, *, channels=None, max_per_day=2, min_score=7):
         max_per_day=max_per_day,
         min_score=min_score,
         check_interval_seconds=3600,
+        min_interval_seconds=14400,
         state_path=state_path,
         ai_registry=ai_registry,
         scoring_provider="groq",

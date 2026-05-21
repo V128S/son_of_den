@@ -248,6 +248,7 @@ async def amain() -> None:
             max_per_day=settings.feed_max_per_day,
             min_score=settings.feed_min_score,
             check_interval_seconds=int(settings.feed_check_interval_hours * 3600),
+            min_interval_seconds=int(settings.feed_min_interval_hours * 3600),
             state_path=settings.state_file,
             ai_registry=ai_registry,
             bots=bots,

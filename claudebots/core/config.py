@@ -64,3 +64,5 @@ class Settings(BaseSettings):
     feed_max_per_day: int = 2
     feed_check_interval_hours: float = 1.0
     feed_min_score: int = 7
+    # Minimum hours between two auto-triggered rounds (set low for testing).
+    feed_min_interval_hours: float = 4.0
