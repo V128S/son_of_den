@@ -40,6 +40,10 @@ _contact_today: dict[int, int] = {}
 # Per-user creation locks — prevent duplicate topics from burst messages
 _create_topic_locks: dict[int, asyncio.Lock] = {}
 
+# Hard cap on the number of contacts stored in memory.
+# When exceeded, the oldest (first-inserted) contact is evicted.
+_MAX_CONTACTS: int = 500
+
 # Path to the bot state JSON file — set by init_business_state() at startup
 _biz_state_path: Path | None = None
 
@@ -442,8 +446,11 @@ async def handle_business_message(
         user = message.from_user
         user_name = user.full_name or user.username or f"ID:{user.id}"
 
-        # Store contact data for admin context
+        # Store contact data for admin context — evict oldest if at capacity
         if user.id not in _contact_data:
+            if len(_contact_data) >= _MAX_CONTACTS:
+                oldest_key = next(iter(_contact_data))
+                del _contact_data[oldest_key]
             _contact_data[user.id] = {"name": user_name, "messages": []}
         _contact_data[user.id]["messages"].append({
             "role": "contact",
