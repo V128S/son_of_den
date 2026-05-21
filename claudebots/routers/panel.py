@@ -323,18 +323,21 @@ async def _on_panel_message(
             message.message_thread_id,
         )
 
-        # Determine thread_id: use existing or create/find appropriate topic
-        thread_id = message.message_thread_id
-        if not thread_id:
-            # Message sent to main chat - analyze and categorize
-            moderator_bot = bots.get("moderator")
-            if moderator_bot:
-                thread_id = await _analyze_topic_and_get_thread(
-                    bot=moderator_bot,
-                    chat_id=settings.panel_chat_id,
-                    question=message.text or "",
-                    ai_registry=ai_registry,
-                )
+        # ALWAYS route to the correct fixed-category topic —
+        # even when message already has a thread_id (wrongly-named topic
+        # created by old code or manually by user).
+        moderator_bot = bots.get("moderator")
+        thread_id: int | None = None
+        if moderator_bot:
+            thread_id = await _analyze_topic_and_get_thread(
+                bot=moderator_bot,
+                chat_id=settings.panel_chat_id,
+                question=message.text or "",
+                ai_registry=ai_registry,
+            )
+        # Fallback: if analysis/creation failed, use the incoming thread
+        if thread_id is None:
+            thread_id = message.message_thread_id
 
         logger.info("Starting panel round with thread_id=%s", thread_id)
 
