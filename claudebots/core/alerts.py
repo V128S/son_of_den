@@ -23,8 +23,19 @@ class AlertSender:
         self._now = now or time.monotonic
         self._last_sent: dict[str, float] = {}
 
+    def _evict_expired(self, now: float) -> None:
+        """Remove _last_sent entries that are past their throttle window.
+
+        Called at the start of every send() so the dict stays bounded to the
+        number of *distinct keys active within one throttle window*.
+        """
+        expired = [k for k, ts in self._last_sent.items() if now - ts >= self._throttle]
+        for k in expired:
+            del self._last_sent[k]
+
     async def send(self, key: str, text: str) -> None:
         now = self._now()
+        self._evict_expired(now)
         last = self._last_sent.get(key)
         if last is not None and now - last < self._throttle:
             logger.debug("Alert throttled: key=%s", key)
