@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import time
 from collections.abc import Callable
+from datetime import timedelta
 
 from aiogram import Bot, F, Router
 from aiogram.types import Message
@@ -29,6 +31,9 @@ _contact_topics: dict[int, int] = {}
 _topic_contacts: dict[int, int] = {}
 # Store contact info: user_id -> {name, messages: [{role, text, time}]}
 _contact_data: dict[int, dict] = {}
+
+# Today's message count per contact (reset after daily digest)
+_contact_today: dict[int, int] = {}
 
 # Owner's personal topics in panel group: topic_name -> thread_id
 _admin_topics: dict[str, int] = {}
@@ -389,6 +394,9 @@ async def handle_business_message(
         })
         # Keep only last 20 messages per contact
         _contact_data[user.id]["messages"] = _contact_data[user.id]["messages"][-20:]
+
+        # Track daily contact activity for digest
+        _contact_today[user.id] = _contact_today.get(user.id, 0) + 1
 
         # Get or create topic for this contact in admin's chat with bot
         topic_id = await _get_or_create_contact_topic(bot, admin_user_id, user.id, user_name)
@@ -751,3 +759,89 @@ async def handle_private_message(
         logger.warning("Final edit failed: %s", e)
 
     conv.add(key, "assistant", response)
+
+
+# ---------------------------------------------------------------------------
+# Daily contact digest
+# ---------------------------------------------------------------------------
+
+def _build_digest_message(timezone_str: str) -> str:
+    """Build a human-readable daily contact digest."""
+    tz = ZoneInfo(timezone_str)
+    today = datetime.now(tz).strftime("%d.%m.%Y")
+
+    if not _contact_today:
+        return f"📊 Дайджест за {today}: сегодня новых сообщений от контактов не было."
+
+    total_msgs = sum(_contact_today.values())
+    lines = [f"📊 Дайджест контактов — {today}\n"]
+
+    # Sort by most messages first
+    for user_id, count in sorted(_contact_today.items(), key=lambda x: -x[1]):
+        data = _contact_data.get(user_id)
+        if data is None:
+            continue
+        name = data["name"]
+        # Find last inbound message snippet
+        last_contact = next(
+            (m["text"][:120] for m in reversed(data["messages"]) if m["role"] == "contact"),
+            "—",
+        )
+        noun = "сообщение" if count == 1 else ("сообщения" if 2 <= count <= 4 else "сообщений")
+        lines.append(f"👤 {name} — {count} {noun}")
+        lines.append(f"   Посл.: «{last_contact}»")
+        lines.append("")
+
+    lines.append(f"Итого: {len(_contact_today)} конт. · {total_msgs} сообщ.")
+    return "\n".join(lines)
+
+
+async def _digest_loop(
+    bot: "Bot",
+    admin_user_id: int,
+    timezone_str: str,
+    digest_time: str,
+) -> None:
+    """Send a daily contact digest at a fixed local time, then reset today's log."""
+    tz = ZoneInfo(timezone_str)
+    h, m = map(int, digest_time.split(":"))
+
+    while True:
+        now_dt = datetime.now(tz)
+        target = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        if target <= now_dt:
+            target += timedelta(days=1)
+
+        delay = (target - now_dt).total_seconds()
+        logger.info("Digest scheduler: next send in %.0f min at %s", delay / 60, target.strftime("%d.%m %H:%M"))
+        await asyncio.sleep(delay)
+
+        try:
+            msg = _build_digest_message(timezone_str)
+            await bot.send_message(admin_user_id, msg, parse_mode=None)
+            logger.info("Contact digest sent to admin (%d contacts)", len(_contact_today))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Digest send failed: %s", e)
+        finally:
+            _contact_today.clear()
+            logger.info("Daily contact log reset")
+
+
+def start_digest_scheduler(
+    bot: "Bot",
+    admin_user_id: int,
+    timezone_str: str,
+    digest_time: str = "20:00",
+) -> "asyncio.Task[None]":
+    """Create and return the daily contact digest background task."""
+    task: asyncio.Task[None] = asyncio.create_task(
+        _digest_loop(bot, admin_user_id, timezone_str, digest_time)
+    )
+    task.add_done_callback(
+        lambda t: logger.warning("Digest loop raised: %s", t.exception())
+        if not t.cancelled() and t.exception() else None
+    )
+    logger.info("Contact digest scheduler started (time=%s %s)", digest_time, timezone_str)
+    return task

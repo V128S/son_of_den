@@ -17,7 +17,7 @@ from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
 from claudebots.routers.admin import PersonaHolder, admin_router
-from claudebots.routers.business import business_router
+from claudebots.routers.business import business_router, start_digest_scheduler
 from claudebots.routers.panel import panel_router, start_revival_scheduler
 
 logger = logging.getLogger(__name__)
@@ -220,6 +220,16 @@ async def amain() -> None:
     # Start background guardian to maintain session dominance
     guardian_task = asyncio.create_task(_session_guardian(bots))
 
+    # Start daily contact digest scheduler
+    digest_task: asyncio.Task[None] | None = None
+    if settings.contact_digest_time:
+        digest_task = start_digest_scheduler(
+            bot=bots["business"],
+            admin_user_id=settings.admin_user_id,
+            timezone_str=settings.user_timezone,
+            digest_time=settings.contact_digest_time,
+        )
+
     try:
         await dp.start_polling(*bots.values())
     finally:
@@ -232,6 +242,12 @@ async def amain() -> None:
             revival_task.cancel()
             try:
                 await revival_task
+            except asyncio.CancelledError:
+                pass
+        if digest_task is not None:
+            digest_task.cancel()
+            try:
+                await digest_task
             except asyncio.CancelledError:
                 pass
 

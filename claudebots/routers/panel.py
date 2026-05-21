@@ -34,6 +34,13 @@ DELAY_BETWEEN_MESSAGES = 1.5  # Delay between different bot messages
 REVIVAL_INTERVAL_SECONDS = 7_200  # Default: every 2 hours
 REVIVAL_JITTER_SECONDS = 1_800    # ±30 min randomness
 
+# Panel memory: compact takeaways from past rounds
+_panel_memories: list[str] = []
+PANEL_MEMORY_MAX = 7
+
+# Thread ID for the ✅ Задачи topic in the panel group
+_tasks_thread_id: int | None = None
+
 # Instruction appended to every speaker turn — extracted to avoid repetition
 _SPEAKER_TURN_INSTRUCTION = (
     "{name}, твой ход. Кратко (2-3 предложения).\n"
@@ -158,6 +165,27 @@ async def _analyze_topic_and_get_thread(
         return None
 
 
+
+async def _get_or_create_tasks_thread(bot: "Bot", chat_id: int) -> int | None:
+    """Return thread_id for the ✅ Задачи topic, creating it on first use."""
+    global _tasks_thread_id
+    if _tasks_thread_id is not None:
+        return _tasks_thread_id
+    # Check in-memory topic cache first (avoids duplicate on edge cases)
+    for tid, name in _panel_topics.items():
+        if name == "✅ Задачи":
+            _tasks_thread_id = tid
+            return tid
+    try:
+        topic = await bot.create_forum_topic(chat_id=chat_id, name="✅ Задачи")
+        _tasks_thread_id = topic.message_thread_id
+        logger.info("Created panel tasks topic (id=%d)", _tasks_thread_id)
+        return _tasks_thread_id
+    except Exception as e:
+        logger.warning("Failed to create panel tasks topic: %s", e)
+        return None
+
+
 @dataclass
 class PanelRoundRunner:
     bots: dict[str, Bot]
@@ -253,7 +281,16 @@ class PanelRoundRunner:
 
         # Keep conversation history, just add new topic
         # This allows bots to reference previous discussions
+
+        # Prepend panel memory so speakers know conclusions from past rounds
+        memory_block = ""
+        if _panel_memories:
+            memory_block = "🧠 Память команды (выводы прошлых обсуждений):\n"
+            memory_block += "\n".join(f"• {m}" for m in _panel_memories[-5:])
+            memory_block += "\n\n"
+
         discussion_context = (
+            memory_block +
             f"Новое сообщение от пользователя: {topic}\n\n"
             "Правила дискуссии:\n"
             "- Отвечай на вопрос с учётом предыдущего контекста\n"
@@ -340,6 +377,81 @@ class PanelRoundRunner:
             await self.alerts.send("panel_moderator", f"{type(e).__name__}: {e}")
             await self._send(moderator_bot, mod.fallback)
 
+        # Post-round: extract action items → save memory (best-effort, silent on failure)
+        await self._extract_action_items(key, topic)
+        await self._save_panel_memory(key)
+
+    async def _extract_action_items(self, key: str, topic: str) -> None:
+        """Extract concrete tasks from the discussion and post to ✅ Задачи topic."""
+        mod = self.personas.moderator
+        if mod is None:
+            return
+        try:
+            client = self.ai_registry.get_client(mod.provider)
+            messages = list(self.conv.get(key))
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Выдели КОНКРЕТНЫЕ задачи или следующие шаги из этого обсуждения — "
+                    "только реально озвученные действия, без домыслов. "
+                    "Формат: нумерованный список. "
+                    "Если конкретных задач нет — ответь одним словом: нет"
+                ),
+            })
+            raw = await client.complete(
+                system="Выделяй action items из обсуждения. Отвечай списком или словом 'нет'.",
+                messages=messages,
+                max_tokens=300,
+            )
+            result = clean_markdown(raw).strip()
+            if not result or result.lower().rstrip(".") in ("нет", "no", "none"):
+                logger.info("No action items in this round")
+                return
+
+            moderator_bot = self.bots["moderator"]
+            tid = await _get_or_create_tasks_thread(moderator_bot, self.panel_chat_id)
+            if tid is None:
+                return
+
+            msg = f"📌 Задачи из «{topic[:60]}»:\n\n{result}"
+            await moderator_bot.send_message(self.panel_chat_id, msg, message_thread_id=tid)
+            logger.info("Action items posted to tasks thread %d", tid)
+
+        except Exception as e:
+            logger.warning("Action items extraction failed: %s", e)
+
+    async def _save_panel_memory(self, key: str) -> None:
+        """Compress the round into a 1-sentence takeaway and store in panel memory."""
+        global _panel_memories
+        mod = self.personas.moderator
+        if mod is None:
+            return
+        try:
+            client = self.ai_registry.get_client(mod.provider)
+            messages = list(self.conv.get(key))
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Сформулируй ГЛАВНЫЙ вывод этого обсуждения одним коротким предложением. "
+                    "Конкретно, без воды. Без markdown."
+                ),
+            })
+            memory = await client.complete(
+                system="Сжимай итог дискуссии до одного предложения.",
+                messages=messages,
+                max_tokens=80,
+            )
+            memory = clean_markdown(memory).strip()
+            if memory:
+                _panel_memories.append(memory)
+                if len(_panel_memories) > PANEL_MEMORY_MAX:
+                    _panel_memories.pop(0)
+                logger.info(
+                    "Panel memory saved (%d/%d): %r",
+                    len(_panel_memories), PANEL_MEMORY_MAX, memory[:60],
+                )
+        except Exception as e:
+            logger.warning("Panel memory extraction failed: %s", e)
 
     async def run_revival(self) -> None:
         """Spontaneous 2-3 message continuation of the last discussion.
