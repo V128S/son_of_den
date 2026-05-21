@@ -44,69 +44,88 @@ def clean_markdown(text: str) -> str:
     return text.strip()
 
 
+# Fixed topic categories for the panel — prevents the AI from using
+# the user's question text as the topic name.
+_PANEL_CATEGORIES = [
+    "💼 Бизнес",
+    "📢 Маркетинг",
+    "🔧 Технологии",
+    "📦 Продукт",
+    "🎯 Стратегия",
+    "👥 Команда",
+    "💰 Финансы",
+    "🌐 Рынок",
+    "🛠 Операции",
+    "📝 Разное",
+]
+
+
 async def _analyze_topic_and_get_thread(
     bot: Bot,
     chat_id: int,
     question: str,
     ai_registry: AIRegistry,
 ) -> int | None:
-    """Analyze question topic and get or create appropriate thread."""
-    # Get AI client for topic analysis
+    """Pick one fixed category for the question and return its panel thread_id."""
     try:
         client = ai_registry.get_client("openrouter_gemini")
 
-        # Build context with existing topics
-        topics_context = ""
+        cats = "\n".join(f"- {c}" for c in _PANEL_CATEGORIES)
+        existing = ""
         if _panel_topics:
-            topics_context = "\n\nСуществующие топики:\n"
-            for topic_id, topic_name in _panel_topics.items():
-                topics_context += f"- {topic_name}\n"
+            names = list(_panel_topics.values())
+            # Only show categories that already have a thread
+            known = [n for n in names if n in _PANEL_CATEGORIES]
+            if known:
+                existing = "Уже созданные топики (используй один из них, если подходит):\n"
+                existing += "\n".join(f"  {n}" for n in known) + "\n\n"
 
-        # Ask AI to categorize
         prompt = (
-            f"Вопрос пользователя: {question}\n\n"
-            f"{topics_context}\n"
-            "Задача: определи ОБЩУЮ тему этого вопроса (2-4 слова + эмодзи).\n\n"
-            "Правила:\n"
-            "- Если тема совпадает с существующим топиком - верни ТОЧНО его название\n"
-            "- Если тема новая - придумай короткое название (2-4 слова) + подходящий эмодзи в начале\n"
-            "- Делай категории широкими: 'Бизнес', 'Маркетинг', 'Технологии', 'Продукт', 'Стратегия'\n"
-            "- Формат: 'эмодзи Название'\n\n"
-            "Верни ТОЛЬКО название топика, без объяснений."
+            f"{existing}"
+            f"Выбери ОДНУ категорию из списка для этого вопроса:\n"
+            f"{cats}\n\n"
+            f"Вопрос: {question[:200]}\n\n"
+            "Ответь СТРОГО одной строкой из списка, слово в слово."
         )
 
-        topic_name = await client.complete(
-            system="Ты помощник для категоризации вопросов. Отвечай кратко, только название топика.",
+        raw = await client.complete(
+            system="Классификатор тем. Возвращай только одну строку из списка без изменений.",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=50,
+            max_tokens=12,
         )
+        candidate = raw.strip().strip('"').strip("'").split("\n")[0].strip()
 
-        topic_name = topic_name.strip().strip('"').strip("'")
+        # Match against fixed list
+        topic_name = "📝 Разное"
+        for cat in _PANEL_CATEGORIES:
+            if cat in candidate or candidate in cat:
+                topic_name = cat
+                break
 
-        # Check if this topic already exists
-        for topic_id, name in _panel_topics.items():
+        logger.info("Panel topic selected: %r (raw=%r)", topic_name, candidate)
+
+        # Return existing thread if already created for this category
+        for tid, name in _panel_topics.items():
             if name.lower() == topic_name.lower():
-                logger.info("Using existing topic: %s (id=%d)", topic_name, topic_id)
-                return topic_id
+                logger.info("Reusing existing panel topic: %s (id=%d)", topic_name, tid)
+                return tid
 
-        # Create new topic
+        # Create new forum topic for this category
         try:
-            bot_info = await bot.get_me()
-            logger.info("Attempting to create topic '%s' using bot @%s", topic_name, bot_info.username)
-
             forum_topic = await bot.create_forum_topic(
                 chat_id=chat_id,
-                name=topic_name[:128],  # Telegram limit
+                name=topic_name,
             )
-            _panel_topics[forum_topic.message_thread_id] = topic_name
-            logger.info("Created new topic: %s (id=%d)", topic_name, forum_topic.message_thread_id)
-            return forum_topic.message_thread_id
+            thread_id = forum_topic.message_thread_id
+            _panel_topics[thread_id] = topic_name
+            logger.info("Created panel topic: %s (id=%d)", topic_name, thread_id)
+            return thread_id
         except Exception as e:
-            logger.warning("Failed to create forum topic with bot @%s: %s", bot_info.username if 'bot_info' in locals() else 'unknown', e)
+            logger.warning("Failed to create panel forum topic %r: %s", topic_name, e)
             return None
 
     except Exception as e:
-        logger.warning("Topic analysis failed: %s", e)
+        logger.warning("Panel topic analysis failed: %s", e)
         return None
 
 
@@ -125,6 +144,7 @@ class PanelRoundRunner:
 
     async def _send(self, bot: Bot, text: str) -> None:
         """Send message to the correct thread."""
+        logger.debug("_send: chat=%s thread=%s len=%d", self.panel_chat_id, self.thread_id, len(text))
         await bot.send_message(
             self.panel_chat_id,
             text,
@@ -315,6 +335,8 @@ async def _on_panel_message(
                     question=message.text or "",
                     ai_registry=ai_registry,
                 )
+
+        logger.info("Starting panel round with thread_id=%s", thread_id)
 
         runner = PanelRoundRunner(
             bots=bots,
