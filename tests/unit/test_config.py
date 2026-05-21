@@ -33,3 +33,23 @@ def test_settings_missing_required_raises(monkeypatch):
     # supply the missing value and the test would not raise.
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_feed_defaults(monkeypatch):
+    """Feed monitor settings have sensible defaults."""
+    monkeypatch.setenv("BUSINESS_BOT_TOKEN", "111:aaa")
+    monkeypatch.setenv("PANEL_BOT_ANALYST_TOKEN", "222:bbb")
+    monkeypatch.setenv("PANEL_BOT_SKEPTIC_TOKEN", "333:ccc")
+    monkeypatch.setenv("PANEL_BOT_CREATIVE_TOKEN", "444:ddd")
+    monkeypatch.setenv("PANEL_BOT_PRAGMATIST_TOKEN", "555:eee")
+    monkeypatch.setenv("PANEL_BOT_MODERATOR_TOKEN", "666:fff")
+    monkeypatch.setenv("PANEL_CHAT_ID", "-1001234567890")
+    monkeypatch.setenv("ADMIN_USER_ID", "42")
+
+    s = Settings(_env_file=None)
+
+    assert s.feed_channels == ""
+    assert "AI" in s.feed_interests
+    assert s.feed_max_per_day == 2
+    assert s.feed_check_interval_hours == 1.0
+    assert s.feed_min_score == 7

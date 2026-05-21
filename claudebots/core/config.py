@@ -55,3 +55,12 @@ class Settings(BaseSettings):
     # Time of day to send the daily contact digest (HH:MM in user_timezone).
     # Set to empty string to disable.
     contact_digest_time: str = "20:00"
+
+    # Feed monitor: auto-topics from Telegram channels via RSS.
+    # Comma-separated list of channel slugs, e.g. "durov,techcrunch".
+    # Empty string disables the feed monitor entirely.
+    feed_channels: str = ""
+    feed_interests: str = "технологии, AI, бизнес, стартапы"
+    feed_max_per_day: int = 2
+    feed_check_interval_hours: float = 1.0
+    feed_min_score: int = 7
