@@ -106,69 +106,69 @@ async def _get_or_create_contact_topic(bot: Bot, chat_id: int, user_id: int, use
         return None
 
 
+# Fixed set of owner topic categories — keeps the panel organised without
+# relying on the LLM to invent sensible names.
+_OWNER_CATEGORIES = [
+    "📋 Задачи",
+    "💡 Идеи",
+    "📊 Аналитика",
+    "🗓 Планирование",
+    "👥 Клиенты",
+    "💰 Финансы",
+    "📢 Маркетинг",
+    "🔧 Технологии",
+    "📝 Разное",
+]
+
+
 async def _analyze_admin_topic_and_get_thread(
     bot: Bot,
     chat_id: int,
     question: str,
     ai_registry: AIRegistry,
 ) -> int | None:
-    """Analyze owner's question topic and get or create a forum thread in the panel group."""
+    """Pick one fixed category for the owner message and return its thread_id."""
     try:
         client = ai_registry.get_client("openrouter_gemini")
 
-        existing = ""
-        if _admin_topics:
-            existing = "Существующие топики (вернуть один из них, если подходит):\n"
-            for name in _admin_topics:
-                existing += f"  {name}\n"
-
+        cats = "\n".join(f"- {c}" for c in _OWNER_CATEGORIES)
         prompt = (
-            f"{existing}\n"
-            f"Сообщение: {question[:200]}\n\n"
-            "Верни ОДНО из существующих топиков (точно как написано) или придумай НОВЫЙ.\n"
-            "Формат нового топика: ОДИН эмодзи + пробел + 2-3 слова (не более 25 символов итого).\n"
-            "Примеры: '📋 Задачи', '💡 Идеи', '📊 Аналитика', '🗓 Планирование', '👥 Клиенты', '💰 Финансы'\n"
-            "ТОЛЬКО название, без кавычек, без пояснений, без точки в конце."
+            f"Выбери ОДНУ категорию из списка для сообщения.\n"
+            f"Список:\n{cats}\n\n"
+            f"Сообщение: {question[:150]}\n\n"
+            "Ответь СТРОГО одной строкой из списка, слово в слово."
         )
 
         raw = await client.complete(
-            system=(
-                "Ты классификатор тем. "
-                "Возвращаешь ТОЛЬКО одно короткое название категории (не более 25 символов): "
-                "эмодзи + пробел + 2-3 слова. Никаких объяснений."
-            ),
+            system="Классификатор. Возвращай только одну строку из предложенного списка без изменений.",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=20,
+            max_tokens=12,
         )
-        topic_name = raw.strip().strip('"').strip("'").split("\n")[0].strip()
+        candidate = raw.strip().strip('"').strip("'").split("\n")[0].strip()
 
-        # Validate: must be short enough to be a category name, not a question
-        if len(topic_name) > 40 or not topic_name:
-            # Fallback: use a generic category based on question keywords
-            kw = question[:30].lower()
-            if any(w in kw for w in ("клиент", "покупат", "заказ")):
-                topic_name = "👥 Клиенты"
-            elif any(w in kw for w in ("деньг", "финанс", "бюджет", "цен")):
-                topic_name = "💰 Финансы"
-            elif any(w in kw for w in ("задач", "сделат", "нужно", "надо")):
-                topic_name = "📋 Задачи"
-            elif any(w in kw for w in ("иде", "вариант", "придум")):
-                topic_name = "💡 Идеи"
-            else:
-                topic_name = "📊 Разное"
-            logger.info("Topic name too long, using fallback: %s", topic_name)
+        # Match against the fixed list (fuzzy: check if any category is contained)
+        topic_name = "📝 Разное"  # safe default
+        for cat in _OWNER_CATEGORIES:
+            if cat in candidate or candidate in cat:
+                topic_name = cat
+                break
 
-        # Check if topic already exists (case-insensitive)
+        logger.info("Admin topic selected: %r (raw=%r)", topic_name, candidate)
+
+        # Return existing thread if already created
+        if topic_name in _admin_topics:
+            return _admin_topics[topic_name]
+
+        # Also check by thread_id (case-insensitive name match)
         for name, tid in _admin_topics.items():
             if name.lower() == topic_name.lower():
-                logger.info("Using existing admin topic: %s (id=%d)", name, tid)
                 return tid
 
-        # Create new topic
+        # Create new forum topic
         try:
             forum_topic = await bot.create_forum_topic(
                 chat_id=chat_id,
-                name=topic_name[:128],
+                name=topic_name,
             )
             _admin_topics[topic_name] = forum_topic.message_thread_id
             logger.info("Created admin topic: %s (id=%d)", topic_name, forum_topic.message_thread_id)
@@ -478,6 +478,53 @@ async def handle_private_message(
             persona.system_prompt, calendar_client, extra_context,
         )
 
+    # ── Owner private: simple complete() + send_message (no placeholder/stream) ──
+    if is_owner_private:
+        try:
+            await bot.send_chat_action(
+                chat_id=message.chat.id,
+                action="typing",
+            )
+        except Exception as e:
+            logger.debug("chat_action skipped: %s", e)
+
+        try:
+            response = await client.complete(
+                system=system_prompt,
+                messages=conv.get(key),
+                max_tokens=persona.max_tokens,
+            )
+            if not response or not response.strip():
+                response = persona.fallback
+        except Exception as e:
+            logger.warning("Owner complete() failed (%s): %s", persona.provider, e)
+            await alerts.send("owner", f"{type(e).__name__}: {e}")
+            response = persona.fallback
+
+        try:
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=response,
+                parse_mode=None,
+            )
+        except Exception as e:
+            logger.warning("Owner send_message failed: %s", e)
+
+        conv.add(key, "assistant", response)
+
+        # Mirror to panel topic for organised archive
+        if admin_thread_id is not None and panel_chat_id and panel_bot:
+            try:
+                await panel_bot.send_message(
+                    panel_chat_id,
+                    f"👤 <b>Денис:</b> {text[:400]}\n\n🤖 <b>Ответ:</b>\n{response[:400]}",
+                    message_thread_id=admin_thread_id,
+                )
+            except Exception as e:
+                logger.debug("Panel log failed: %s", e)
+        return
+
+    # ── Regular (non-owner) streaming flow ──────────────────────────────────
     try:
         await bot.send_chat_action(
             chat_id=message.chat.id,
@@ -487,7 +534,6 @@ async def handle_private_message(
     except Exception as e:
         logger.debug("chat_action skipped: %s", e)
 
-    # Send placeholder with topic support
     try:
         placeholder = await bot.send_message(
             chat_id=message.chat.id,
@@ -529,7 +575,6 @@ async def handle_private_message(
 
     response = persona.fallback if streaming_failed or not buffer else buffer
 
-    # Final edit
     try:
         await bot.edit_message_text(
             chat_id=placeholder.chat.id,
@@ -541,18 +586,3 @@ async def handle_private_message(
         logger.warning("Final edit failed: %s", e)
 
     conv.add(key, "assistant", response)
-
-    # Log owner's private message to the panel topic for organized archiving
-    if is_owner_private and admin_thread_id is not None and panel_chat_id and panel_bot:
-        try:
-            panel_text = (
-                f"👤 <b>Денис:</b> {text[:400]}\n\n"
-                f"🤖 <b>Ответ:</b>\n{response[:400]}"
-            )
-            await panel_bot.send_message(
-                panel_chat_id,
-                panel_text,
-                message_thread_id=admin_thread_id,
-            )
-        except Exception as e:
-            logger.debug("Failed to log owner message to panel topic: %s", e)
