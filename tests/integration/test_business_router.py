@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from claudebots.routers.business import handle_business_message
@@ -150,3 +151,84 @@ async def test_business_throttle_prevents_intermediate_edits(
     # Only the final edit happens (1 call), not one per stream chunk.
     assert bot.edit_message_text.await_count == 1
     assert bot.edit_message_text.await_args.kwargs["text"] == "canned stream response"
+
+
+# ---------------------------------------------------------------------------
+# TOCTOU / concurrent contact topic creation
+# ---------------------------------------------------------------------------
+
+async def test_concurrent_topic_creation_calls_api_once():
+    """Burst of concurrent messages for the same new user creates exactly one topic."""
+    import claudebots.routers.business as biz_mod
+
+    # Reset module state for isolation
+    biz_mod._contact_topics.clear()
+    biz_mod._topic_contacts.clear()
+    biz_mod._create_topic_locks.clear()
+
+    call_count = 0
+
+    async def slow_create_forum_topic(*, chat_id, name):
+        nonlocal call_count
+        call_count += 1
+        await asyncio.sleep(0)  # yield so other coroutines can race in
+        topic = MagicMock()
+        topic.message_thread_id = 42
+        return topic
+
+    bot = MagicMock()
+    bot.create_forum_topic = slow_create_forum_topic
+
+    # Fire 5 concurrent calls for the same user_id=7
+    results = await asyncio.gather(
+        *[biz_mod._get_or_create_contact_topic(bot, -1001, 7, "Alice") for _ in range(5)]
+    )
+
+    # Every call must return the same thread_id
+    assert all(r == 42 for r in results), f"Got mixed results: {results}"
+    # The Telegram API must have been called exactly once
+    assert call_count == 1, f"create_forum_topic called {call_count} times (expected 1)"
+
+
+async def test_second_user_gets_independent_topic():
+    """Two different users each get their own topic; neither interferes with the other."""
+    import claudebots.routers.business as biz_mod
+
+    biz_mod._contact_topics.clear()
+    biz_mod._topic_contacts.clear()
+    biz_mod._create_topic_locks.clear()
+
+    tid_seq = iter([10, 20])
+
+    async def make_topic(*, chat_id, name):
+        topic = MagicMock()
+        topic.message_thread_id = next(tid_seq)
+        return topic
+
+    bot = MagicMock()
+    bot.create_forum_topic = make_topic
+
+    tid_a = await biz_mod._get_or_create_contact_topic(bot, -1001, 1, "Alice")
+    tid_b = await biz_mod._get_or_create_contact_topic(bot, -1001, 2, "Bob")
+
+    assert tid_a == 10
+    assert tid_b == 20
+    assert biz_mod._contact_topics == {1: 10, 2: 20}
+
+
+async def test_cached_topic_skips_api_call():
+    """If the topic is already cached, create_forum_topic is never called."""
+    import claudebots.routers.business as biz_mod
+
+    biz_mod._contact_topics.clear()
+    biz_mod._topic_contacts.clear()
+    biz_mod._create_topic_locks.clear()
+    biz_mod._contact_topics[99] = 777  # pre-seed cache
+
+    bot = MagicMock()
+    bot.create_forum_topic = AsyncMock()
+
+    result = await biz_mod._get_or_create_contact_topic(bot, -1001, 99, "Eve")
+
+    assert result == 777
+    bot.create_forum_topic.assert_not_called()
