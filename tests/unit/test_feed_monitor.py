@@ -341,6 +341,54 @@ async def test_topic_contains_title(tmp_path):
     assert mock_create.called
 
 
+# ---------------------------------------------------------------------------
+# _parse_tme (t.me/s/ HTML scraper)
+# ---------------------------------------------------------------------------
+
+TME_HTML = """
+<div class="tgme_widget_message_wrap">
+  <div data-post="testchan/42">
+    <time datetime="2024-01-15T10:00:00+00:00"></time>
+    <div class="tgme_widget_message_text js-message_text" dir="auto">
+      Hot AI news today!
+    </div>
+  </div>
+</div>
+<div class="tgme_widget_message_wrap">
+  <div data-post="testchan/43">
+    <time datetime="2024-01-15T11:00:00+00:00"></time>
+    <div class="tgme_widget_message_text js-message_text" dir="auto">
+      <b>Another</b> post with &amp; entities
+    </div>
+  </div>
+</div>
+"""
+
+
+def test_parse_tme_returns_entries():
+    from claudebots.core.feed_monitor import _parse_tme
+    entries = _parse_tme(TME_HTML, "testchan")
+    assert len(entries) == 2
+    url, title, text, ts = entries[0]
+    assert url == "https://t.me/testchan/42"
+    assert "AI news" in text
+    assert ts > 0
+
+
+def test_parse_tme_strips_html():
+    from claudebots.core.feed_monitor import _parse_tme
+    entries = _parse_tme(TME_HTML, "testchan")
+    _, _, text, _ = entries[1]
+    assert "<b>" not in text
+    assert "Another" in text
+    assert "&" in text  # entity decoded
+
+
+def test_parse_tme_empty_html():
+    from claudebots.core.feed_monitor import _parse_tme
+    assert _parse_tme("", "testchan") == []
+
+
 @pytest.mark.asyncio
 async def test_empty_channels_no_http(tmp_path):
     """When channels list is empty, no HTTP requests are made."""

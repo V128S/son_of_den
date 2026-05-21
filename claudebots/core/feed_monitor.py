@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RSS_BASE = "https://rsshub.app/telegram/channel/{channel}"
+_TG_WEB_BASE = "https://t.me/s/{channel}"
 _FEED_SEEN_MAX = 500
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
@@ -143,6 +144,26 @@ def _parse_rss(xml_text: str) -> list[tuple[str, str, str, float]]:
         if url:
             entries.append((url.strip(), title.strip(), text.strip(), ts))
 
+    return entries
+
+
+def _parse_tme(html: str, channel: str) -> list[tuple[str, str, str, float]]:
+    """Parse t.me/s/<channel> HTML; return list of (url, title, text, timestamp)."""
+    entries: list[tuple[str, str, str, float]] = []
+    for m in re.finditer(
+        r'data-post="([^"]+)".*?'
+        r'datetime="([^"]+)".*?'
+        r'class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+        html,
+        re.DOTALL,
+    ):
+        slug, dt_str, raw = m.group(1), m.group(2), m.group(3)
+        url = f"https://t.me/{slug}"
+        text = _strip_html(raw)
+        ts = _parse_timestamp(dt_str)
+        title = text[:80].rstrip()
+        if url and text:
+            entries.append((url, title, text, ts))
     return entries
 
 
@@ -270,14 +291,28 @@ class FeedMonitor:
     async def _fetch_entries(
         self, client: httpx.AsyncClient, channel: str
     ) -> list[tuple[str, str, str, float]]:
-        url = _RSS_BASE.format(channel=channel.strip())
+        ch = channel.strip()
+        # 1. Try rsshub.app (Atom RSS) — works with self-hosted instances
         try:
-            r = await client.get(url)
+            r = await client.get(_RSS_BASE.format(channel=ch))
             r.raise_for_status()
-            return _parse_rss(r.text)
+            entries = _parse_rss(r.text)
+            if entries:
+                return entries
+            logger.debug("Feed: rsshub returned empty feed for %s, trying t.me/s/", ch)
+        except Exception:
+            pass  # silent fall-through to t.me/s/
+        # 2. Fallback: scrape t.me/s/<channel> (works without external service)
+        try:
+            r = await client.get(_TG_WEB_BASE.format(channel=ch))
+            r.raise_for_status()
+            entries = _parse_tme(r.text, ch)
+            if entries:
+                return entries
+            logger.debug("Feed: t.me/s/%s returned no posts", ch)
         except Exception as e:
-            logger.warning("Feed: failed to fetch channel=%s: %s", channel, e)
-            return []
+            logger.warning("Feed: failed to fetch channel=%s: %s", ch, e)
+        return []
 
     async def _score_entry(self, title: str, text: str) -> int:
         """Ask the cheapest AI provider to score the entry 0–10."""
