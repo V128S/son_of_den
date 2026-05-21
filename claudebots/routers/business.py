@@ -137,6 +137,9 @@ async def _classify_owner_category(question: str, ai_registry: AIRegistry) -> st
             max_tokens=12,
         )
         candidate = raw.strip().strip('"').strip("'").split("\n")[0].strip()
+        if not candidate:
+            logger.warning("Empty response from category classifier")
+            return "📝 Разное"
         for cat in _OWNER_CATEGORIES:
             if cat in candidate or candidate in cat:
                 logger.info("Owner category: %r (raw=%r)", cat, candidate)
@@ -291,20 +294,14 @@ async def _on_panel_command(
 
     await message.reply(f"🎬 Запускаю обсуждение: {topic[:80]}")
 
-    from claudebots.routers.panel import (
-        _analyze_topic_and_get_thread,
-        PanelRoundRunner,
-        _active_round,
-        _processing_lock,
-    )
-    import asyncio as _asyncio
+    from claudebots.routers import panel as _panel  # lazy to avoid circular at module load
 
     moderator_bot = bots.get("moderator")
     if not moderator_bot:
         await message.reply("❌ Модератор не настроен")
         return
 
-    thread_id = await _analyze_topic_and_get_thread(
+    thread_id = await _panel._analyze_topic_and_get_thread(
         bot=moderator_bot,
         chat_id=settings.panel_chat_id,
         question=topic,
@@ -312,7 +309,7 @@ async def _on_panel_command(
     )
     logger.info("Panel via /panel command: thread_id=%s topic=%r", thread_id, topic)
 
-    runner = PanelRoundRunner(
+    runner = _panel.PanelRoundRunner(
         bots=bots,
         personas=personas,
         ai_registry=ai_registry,
@@ -321,6 +318,7 @@ async def _on_panel_command(
         panel_chat_id=settings.panel_chat_id,
         thread_id=thread_id,
     )
+    import asyncio as _asyncio
     _asyncio.create_task(runner.run_round(topic))
 
 @business_router.message(F.text & F.chat.type.in_({"private", "supergroup"}))
@@ -432,6 +430,7 @@ async def handle_business_message(
         await alerts.send("business_placeholder", f"{type(e).__name__}: {e}")
         return
 
+    _TG_MAX = 4096
     buffer = ""
     last_edit_at = now()
     streaming_failed = False
@@ -442,7 +441,10 @@ async def handle_business_message(
             messages=conv.get(key),
             max_tokens=persona.max_tokens,
         ):
-            buffer += delta
+            remaining = _TG_MAX - len(buffer)
+            if remaining <= 0:
+                break  # already at telegram limit
+            buffer += delta[:remaining]
             if now() - last_edit_at >= edit_throttle_seconds and buffer:
                 try:
                     await bot.edit_message_text(

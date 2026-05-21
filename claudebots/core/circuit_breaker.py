@@ -1,7 +1,10 @@
+import logging
 import time
 from collections import deque
 from collections.abc import Callable
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class CircuitBreakerOpen(Exception):
@@ -34,6 +37,7 @@ class CircuitBreaker:
         now = self._now()
         if self._state == _State.OPEN:
             if now - self._opened_at >= self._recovery:
+                logger.info("Circuit breaker entering HALF_OPEN after %.1fs", self._recovery)
                 self._state = _State.HALF_OPEN
                 return
             raise CircuitBreakerOpen("Circuit breaker is open")
@@ -50,6 +54,7 @@ class CircuitBreaker:
 
     def record_success(self) -> None:
         if self._state == _State.HALF_OPEN:
+            logger.info("Circuit breaker CLOSED after successful probe")
             self._state = _State.CLOSED
             self._failures.clear()
 
@@ -58,5 +63,10 @@ class CircuitBreaker:
             self._failures.popleft()
 
     def _open(self, now: float) -> None:
+        logger.warning(
+            "Circuit breaker OPEN — %d failures in %.1fs window",
+            len(self._failures),
+            self._window,
+        )
         self._state = _State.OPEN
         self._opened_at = now

@@ -4,7 +4,7 @@ Drop-in alternative for ClaudeClient with the same `complete()` and `stream()`
 interface. Used when Claude returns RateLimitError or its circuit breaker opens.
 
 Groq exposes an OpenAI-compatible chat-completions API, so messages are sent
-as `[{"role": "system", ...}, {"role": "user", ...}, ...]`. Groq does NOT
+as [{"role": "system", ...}, {"role": "user", ...}, ...]. Groq does NOT
 support prompt caching, so `usage["cache_read"]` is always 0.
 """
 
@@ -23,7 +23,7 @@ class GroqClient:
     def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile") -> None:
         self._sdk = AsyncGroq(api_key=api_key, max_retries=3)
         self._model = model
-        # `cache_read` is kept for API symmetry with ClaudeClient.usage; always 0 for Groq.
+        # `cache_read` kept for API symmetry with ClaudeClient; always 0 for Groq.
         self.usage: Usage = {"input": 0, "output": 0, "cache_read": 0}
 
     @staticmethod
@@ -66,10 +66,19 @@ class GroqClient:
             stream=True,
             stream_options={"include_usage": True},
         )
+        # Groq sends usage in the LAST chunk only — guard against double-counting
+        # in case the SDK ever changes that behaviour.
+        usage_recorded = False
         async for chunk in stream:
-            if chunk.usage is not None:
+            if chunk.usage is not None and not usage_recorded:
                 self.usage["input"] += chunk.usage.prompt_tokens
                 self.usage["output"] += chunk.usage.completion_tokens
+                logger.debug(
+                    "Groq stream usage in=%d out=%d",
+                    chunk.usage.prompt_tokens,
+                    chunk.usage.completion_tokens,
+                )
+                usage_recorded = True
             if chunk.choices:
                 delta = chunk.choices[0].delta.content
                 if delta:

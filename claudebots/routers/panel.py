@@ -27,6 +27,16 @@ _panel_topics: dict[int, str] = {}
 MAX_DISCUSSION_MESSAGES = 4  # Shorter discussions, more focused
 DELAY_BETWEEN_MESSAGES = 1.5  # Delay between different bot messages
 
+# Instruction appended to every speaker turn — extracted to avoid repetition
+_SPEAKER_TURN_INSTRUCTION = (
+    "{name}, твой ход. Кратко (2-3 предложения).\n"
+    "- Развивай идеи других, добавляй свой взгляд\n"
+    "- Будь конструктивен: предлагай конкретику\n"
+    "- Спорь только если видишь реальную проблему\n"
+    "- Учитывай весь контекст обсуждения\n"
+    "- Без markdown"
+)
+
 
 def clean_markdown(text: str) -> str:
     """Remove markdown formatting symbols for cleaner Telegram output."""
@@ -159,14 +169,7 @@ class PanelRoundRunner:
         messages = list(self.conv.get(key))
         messages.append({
             "role": "user",
-            "content": (
-                f"{persona.name}, твой ход. Кратко (2-3 предложения).\n"
-                "- Развивай идеи других, добавляй свой взгляд\n"
-                "- Будь конструктивен: предлагай конкретику\n"
-                "- Спорь только если видишь реальную проблему\n"
-                "- Учитывай весь контекст обсуждения\n"
-                "- Без markdown"
-            )
+            "content": _SPEAKER_TURN_INSTRUCTION.format(name=persona.name),
         })
 
         try:
@@ -305,13 +308,13 @@ async def _on_panel_message(
 
     global _active_round
 
-    # Use lock to ensure only one bot processes the message
+    # Acquire lock to ensure only one round starts at a time.
+    # Non-blocking: if already locked, another handler is processing — skip.
     if _processing_lock.locked():
-        logger.debug("Skipping duplicate panel message - already processing")
+        logger.debug("Skipping duplicate panel message — lock held")
         return
 
     async with _processing_lock:
-        # Double-check after acquiring lock
         if _active_round and not _active_round.done():
             logger.debug("Round already active, skipping")
             return
@@ -350,4 +353,9 @@ async def _on_panel_message(
             panel_chat_id=settings.panel_chat_id,
             thread_id=thread_id,
         )
-        _active_round = asyncio.create_task(runner.run_round(message.text or ""))
+        task = asyncio.create_task(runner.run_round(message.text or ""))
+        task.add_done_callback(
+            lambda t: logger.warning("Panel round raised: %s", t.exception())
+            if not t.cancelled() and t.exception() else None
+        )
+        _active_round = task

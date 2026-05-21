@@ -20,7 +20,7 @@ class GeminiClient:
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
         self._client = genai.Client(api_key=api_key)
         self._model = model
-        # `cache_read` is kept for API symmetry; always 0 for Gemini.
+        # `cache_read` kept for API symmetry; always 0 for Gemini.
         self.usage: Usage = {"input": 0, "output": 0, "cache_read": 0}
 
     @staticmethod
@@ -45,16 +45,11 @@ class GeminiClient:
             system_instruction=system,
             max_output_tokens=max_tokens,
         )
-
-        gemini_messages = self._to_gemini_messages(messages)
-
         response = await self._client.aio.models.generate_content(
             model=self._model,
-            contents=gemini_messages,
+            contents=self._to_gemini_messages(messages),
             config=config,
         )
-
-        # Record usage if available
         if response.usage_metadata:
             self.usage["input"] += response.usage_metadata.prompt_token_count or 0
             self.usage["output"] += response.usage_metadata.candidates_token_count or 0
@@ -63,7 +58,6 @@ class GeminiClient:
                 response.usage_metadata.prompt_token_count or 0,
                 response.usage_metadata.candidates_token_count or 0,
             )
-
         return response.text or ""
 
     async def stream(
@@ -77,26 +71,23 @@ class GeminiClient:
             system_instruction=system,
             max_output_tokens=max_tokens,
         )
-
-        gemini_messages = self._to_gemini_messages(messages)
-
         stream = await self._client.aio.models.generate_content_stream(
             model=self._model,
-            contents=gemini_messages,
+            contents=self._to_gemini_messages(messages),
             config=config,
         )
+        # Gemini sends usage_metadata in the final chunk only.
+        # Guard against double-counting by recording usage once.
+        usage_recorded = False
         async for chunk in stream:
             if chunk.text:
                 yield chunk.text
-
-            # Record usage from final chunk if available
-            if chunk.usage_metadata:
-                if chunk.usage_metadata.prompt_token_count:
-                    self.usage["input"] += chunk.usage_metadata.prompt_token_count
-                if chunk.usage_metadata.candidates_token_count:
-                    self.usage["output"] += chunk.usage_metadata.candidates_token_count
+            if chunk.usage_metadata and not usage_recorded:
+                self.usage["input"] += chunk.usage_metadata.prompt_token_count or 0
+                self.usage["output"] += chunk.usage_metadata.candidates_token_count or 0
                 logger.debug(
                     "Gemini stream usage in=%d out=%d",
                     chunk.usage_metadata.prompt_token_count or 0,
                     chunk.usage_metadata.candidates_token_count or 0,
                 )
+                usage_recorded = True

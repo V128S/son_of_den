@@ -6,6 +6,8 @@ from aiogram import Bot
 
 logger = logging.getLogger(__name__)
 
+_MAX_TELEGRAM_MSG = 4096
+
 
 class AlertSender:
     def __init__(
@@ -28,7 +30,11 @@ class AlertSender:
             logger.debug("Alert throttled: key=%s", key)
             return
         self._last_sent[key] = now
+        msg = f"⚠️ {key}: {text}"
+        # Telegram hard-caps messages at 4096 characters
+        if len(msg) > _MAX_TELEGRAM_MSG:
+            msg = msg[: _MAX_TELEGRAM_MSG - 3] + "..."
         try:
-            await self._bot.send_message(chat_id=self._admin_user_id, text=f"⚠️ {key}: {text}")
+            await self._bot.send_message(chat_id=self._admin_user_id, text=msg)
         except Exception as e:
             logger.warning("Failed to send admin alert key=%s: %s", key, e)

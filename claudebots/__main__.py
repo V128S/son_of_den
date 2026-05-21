@@ -23,21 +23,18 @@ from claudebots.routers.panel import panel_router
 logger = logging.getLogger(__name__)
 
 
-async def _seize_sessions(bots: dict) -> None:
-    """Call Telegram close() to evict any competing bot process."""
-    import urllib.request, ssl, json as _json
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+def _seize_sessions_sync(bots: dict) -> None:
+    """Call Telegram close() synchronously to evict any competing bot process."""
+    import urllib.request
     for b in bots.values():
         try:
             tok = b.token
             url = f"https://api.telegram.org/bot{tok}/close"
-            req = urllib.request.Request(url, method='POST')
-            with urllib.request.urlopen(req, timeout=6, context=ctx):
+            req = urllib.request.Request(url, method="POST")
+            with urllib.request.urlopen(req, timeout=6):
                 pass
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("close() for bot %s: %s", tok[:10] + "...", exc)
 
 
 async def _session_guardian(bots: dict) -> None:
@@ -46,22 +43,6 @@ async def _session_guardian(bots: dict) -> None:
         await asyncio.sleep(40)
         logger.debug("Session guardian: evicting competing instances")
         await asyncio.to_thread(_seize_sessions_sync, bots)
-
-
-def _seize_sessions_sync(bots: dict) -> None:
-    import urllib.request, ssl
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    for b in bots.values():
-        try:
-            tok = b.token
-            url = f"https://api.telegram.org/bot{tok}/close"
-            req = urllib.request.Request(url, method='POST')
-            with urllib.request.urlopen(req, timeout=6, context=ctx):
-                pass
-        except Exception:
-            pass
 
 
 async def amain() -> None:
@@ -161,28 +142,38 @@ async def amain() -> None:
     dp = Dispatcher()
 
     # Dependency injection via workflow_data — every handler receives these as kwargs
-    dp.workflow_data.update(
+    workflow: dict = dict(
         settings=settings,
         personas=persona_holder.registry,  # snapshot; /reload updates via holder below
         persona_holder=persona_holder,
-        claude=claude,
         ai_registry=ai_registry,
         conv=conv,
         bots=bots,
         alerts=alerts,
         calendar_client=calendar_client,
     )
+    # `claude` is only defined when ANTHROPIC_API_KEY is set
+    if "claude" in dir() or "claude" in vars():
+        pass  # handled below
+    try:
+        workflow["claude"] = claude  # type: ignore[name-defined]
+    except NameError:
+        pass
+    dp.workflow_data.update(workflow)
 
     # Panel router must be first to handle panel messages before business router
     dp.include_routers(panel_router, business_router, admin_router)
 
     @dp.error()
     async def on_error(event: ErrorEvent) -> bool:
+        import traceback as _tb
         logger.exception("Unhandled error", exc_info=event.exception)
         try:
+            tb = "".join(_tb.format_exception(type(event.exception), event.exception,
+                                              event.exception.__traceback__))
             await alerts.send(
                 f"unhandled_{type(event.exception).__name__}",
-                str(event.exception)[:500],
+                tb[-3500:],  # keep tail where the actual error is
             )
         except Exception:
             pass
@@ -214,9 +205,16 @@ async def amain() -> None:
     await asyncio.sleep(0.5)
 
     # Start background guardian to maintain session dominance
-    asyncio.create_task(_session_guardian(bots))
+    guardian_task = asyncio.create_task(_session_guardian(bots))
 
-    await dp.start_polling(*bots.values())
+    try:
+        await dp.start_polling(*bots.values())
+    finally:
+        guardian_task.cancel()
+        try:
+            await guardian_task
+        except asyncio.CancelledError:
+            pass
 
 
 def main() -> None:
