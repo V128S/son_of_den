@@ -903,6 +903,57 @@ async def _digest_loop(
             logger.info("Daily contact log reset")
 
 
+
+# ---------------------------------------------------------------------------
+# Admin forward-to-panel trigger
+# ---------------------------------------------------------------------------
+
+@business_router.message(F.forward_from_chat & F.chat.func(lambda c: c.type == "private"))
+async def _on_forward_to_panel(
+    message: Message,
+    settings,
+    ai_registry,
+    conv,
+    personas,
+    alerts,
+    bots,
+    **_kwargs,
+) -> None:
+    """When the admin forwards a channel post to the business bot, start a panel round."""
+    if not message.from_user or message.from_user.id != settings.admin_user_id:
+        return
+
+    source = (
+        message.forward_from_chat.title
+        if message.forward_from_chat and message.forward_from_chat.title
+        else "канал"
+    )
+    text = message.text or message.caption or ""
+    if not text.strip():
+        await message.reply("⚠️ Пересланное сообщение без текста — не могу запустить обсуждение.")
+        return
+
+    topic = f"Из «{source}»: {text[:500]}"
+
+    from claudebots.routers.panel import PanelRoundRunner  # late import — avoids circular
+
+    runner = PanelRoundRunner(
+        bots=bots,
+        personas=personas,
+        ai_registry=ai_registry,
+        conv=conv,
+        alerts=alerts,
+        panel_chat_id=settings.panel_chat_id,
+        thread_id=None,
+    )
+    _t = asyncio.create_task(runner.run_round(topic))
+    _t.add_done_callback(
+        lambda t: logger.warning("Forward-triggered round raised: %s", t.exception())
+        if not t.cancelled() and t.exception()
+        else None
+    )
+    await message.reply("🎙 Запускаю обсуждение на панели…")
+
 def start_digest_scheduler(
     bot: "Bot",
     admin_user_id: int,
