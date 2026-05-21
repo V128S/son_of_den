@@ -266,7 +266,7 @@ class PanelRoundRunner:
             await self._send(moderator_bot, mod.fallback)
 
 
-@panel_router.message(F.text)
+@panel_router.message(F.text & F.chat.type.in_({"supergroup", "group"}))
 async def _on_panel_message(
     message: Message,
     bots: dict[str, Bot],
