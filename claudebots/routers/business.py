@@ -455,15 +455,6 @@ async def handle_private_message(
     if is_owner_private:
         # Dedicated owner system prompt — no business-secretary framing
         system_prompt = await _build_system_prompt(OWNER_SYSTEM_PROMPT, calendar_client)
-
-        # Create/find topic in panel group for organizing the conversation
-        if panel_chat_id and panel_bot:
-            admin_thread_id = await _analyze_admin_topic_and_get_thread(
-                bot=panel_bot,
-                chat_id=panel_chat_id,
-                question=text,
-                ai_registry=ai_registry,
-            )
     else:
         extra_context = ""
         if is_admin and not contact_context:
@@ -511,17 +502,6 @@ async def handle_private_message(
             logger.warning("Owner send_message failed: %s", e)
 
         conv.add(key, "assistant", response)
-
-        # Mirror to panel topic for organised archive
-        if admin_thread_id is not None and panel_chat_id and panel_bot:
-            try:
-                await panel_bot.send_message(
-                    panel_chat_id,
-                    f"👤 <b>Денис:</b> {text[:400]}\n\n🤖 <b>Ответ:</b>\n{response[:400]}",
-                    message_thread_id=admin_thread_id,
-                )
-            except Exception as e:
-                logger.debug("Panel log failed: %s", e)
         return
 
     # ── Regular (non-owner) streaming flow ──────────────────────────────────
