@@ -522,6 +522,29 @@ def _build_recent_contacts_summary(max_contacts: int = 5, max_msgs: int = 3) -> 
     return summary
 
 
+async def _rename_topic_async(bot: Bot, chat_id: int, thread_id: int, name: str) -> None:
+    """Rename a forum/private-chat topic to a fixed category name (runs after the response)."""
+    import asyncio as _aio
+    await _aio.sleep(0.3)
+    try:
+        await bot.edit_forum_topic(chat_id=chat_id, message_thread_id=thread_id, name=name)
+        _admin_topics[name] = thread_id
+        logger.info("Renamed topic %d → %r", thread_id, name)
+    except Exception as e:
+        logger.warning("edit_forum_topic failed (%d → %r): %s", thread_id, name, e)
+
+
+async def _close_topic_async(bot: Bot, chat_id: int, thread_id: int) -> None:
+    """Close a question-text topic that has been superseded by an existing category."""
+    import asyncio as _aio
+    await _aio.sleep(0.5)
+    try:
+        await bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+        logger.info("Closed superseded topic %d", thread_id)
+    except Exception as e:
+        logger.debug("close_forum_topic %d: %s", thread_id, e)
+
+
 async def handle_private_message(
     *,
     message: Message,
@@ -586,29 +609,29 @@ async def handle_private_message(
     # For private DM: forum topics not supported — respond inline.
     target_thread_id: int | None = message.message_thread_id  # default: same as incoming
 
-    if is_owner_mode and chat_type == "supergroup":
-        # Skip routing only if we already know this thread is a contact topic
-        is_contact_topic = bool(thread_id and thread_id in _topic_contacts)
+    if is_owner_mode and thread_id and thread_id not in _topic_contacts:
+        # Denis is in a topic (any chat type) that is NOT a contact topic.
+        # Classify and ensure the topic gets a fixed category name.
+        # We respond in the best available thread, then rename/close asynchronously.
+        import asyncio as _aio
+        category = await _classify_owner_category(text, ai_registry)
+        existing_tid = _admin_topics.get(category)
 
-        if not is_contact_topic:
-            # Classify and route to the fixed category topic
-            category = await _classify_owner_category(text, ai_registry)
-            routed = await _route_owner_to_category(
-                bot=bot,
-                chat_id=message.chat.id,
-                current_thread_id=message.message_thread_id,
-                category=category,
-            )
-            if routed and routed != thread_id:
-                target_thread_id = routed
-                # Re-key conversation to the target topic for per-category history
-                new_key = f"private:{message.chat.id}:{routed}"
-                conv.add(new_key, "user", text)
-                key = new_key
-                logger.info("Owner: routed %r → topic %d", category, routed)
-            elif routed:
-                target_thread_id = routed  # same topic (already correct category)
-                logger.info("Owner: stays in %r (topic %d)", category, routed)
+        if existing_tid and existing_tid != thread_id:
+            # A category topic already exists in a different thread — route there.
+            target_thread_id = existing_tid
+            new_key = f"private:{message.chat.id}:{existing_tid}"
+            conv.add(new_key, "user", text)
+            key = new_key
+            logger.info("Owner: routing %r → topic %d (closing %d)", category, existing_tid, thread_id)
+            # Close the question-text topic after we respond in the correct one
+            _aio.create_task(_close_topic_async(bot, message.chat.id, thread_id))
+        else:
+            # No existing category topic — respond here and rename this topic
+            target_thread_id = thread_id
+            logger.info("Owner: responding in %d, will rename → %r", thread_id, category)
+            # Rename happens AFTER the response so Denis sees the answer first
+            _aio.create_task(_rename_topic_async(bot, message.chat.id, thread_id, category))
 
     if is_owner_mode:
         # Build owner system prompt — always use OWNER_SYSTEM_PROMPT as base
