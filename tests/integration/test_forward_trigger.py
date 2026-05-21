@@ -21,6 +21,8 @@ def _make_message(*, from_user_id=42, chat_type="private", forward_chat_title="T
         msg.forward_from_chat.title = forward_chat_title
     else:
         msg.forward_from_chat = None
+    # forward_origin for Bot API 7.0+ (type annotation needs explicit set on spec=Message mock)
+    msg.forward_origin = None
     msg.reply = AsyncMock()
     return msg
 

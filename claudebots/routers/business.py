@@ -920,7 +920,15 @@ async def _on_forward_to_panel(
     **_kwargs,
 ) -> None:
     """When the admin forwards a channel post to the business bot, start a panel round."""
+    logger.info(
+        "Forward trigger: from_user=%s admin=%s fwd_chat=%s fwd_origin=%s",
+        getattr(message.from_user, "id", None),
+        settings.admin_user_id,
+        message.forward_from_chat,
+        type(message.forward_origin).__name__ if message.forward_origin else None,
+    )
     if not message.from_user or message.from_user.id != settings.admin_user_id:
+        logger.info("Forward trigger: ignored (not admin)")
         return
 
     # Support both legacy forward_from_chat and new forward_origin (Bot API 7.0+)
