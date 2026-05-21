@@ -908,7 +908,7 @@ async def _digest_loop(
 # Admin forward-to-panel trigger
 # ---------------------------------------------------------------------------
 
-@business_router.message(F.forward_from_chat & F.chat.func(lambda c: c.type == "private"))
+@business_router.message((F.forward_from_chat | F.forward_origin) & (F.chat.type == "private"))
 async def _on_forward_to_panel(
     message: Message,
     settings,
@@ -923,11 +923,14 @@ async def _on_forward_to_panel(
     if not message.from_user or message.from_user.id != settings.admin_user_id:
         return
 
-    source = (
-        message.forward_from_chat.title
-        if message.forward_from_chat and message.forward_from_chat.title
-        else "канал"
-    )
+    # Support both legacy forward_from_chat and new forward_origin (Bot API 7.0+)
+    source = "канал"
+    if message.forward_from_chat and message.forward_from_chat.title:
+        source = message.forward_from_chat.title
+    elif message.forward_origin is not None and hasattr(message.forward_origin, "chat"):
+        chat = getattr(message.forward_origin, "chat", None)
+        if chat and getattr(chat, "title", None):
+            source = chat.title
     text = message.text or message.caption or ""
     if not text.strip():
         await message.reply("⚠️ Пересланное сообщение без текста — не могу запустить обсуждение.")
