@@ -54,6 +54,10 @@ _biz_state_path: Path | None = None
 # Owner's personal topics in panel group: topic_name -> thread_id
 _admin_topics: dict[str, int] = {}
 
+# chat_id of the business supergroup (set when owner writes from there)
+# Used to route Instagram/media to forum topics even when link is sent via DM
+_admin_supergroup_id: int | None = None
+
 def _persist_business_state() -> None:
     """Save contact and admin topic state to disk. No-op if path not set."""
     if _biz_state_path is None:
@@ -61,6 +65,7 @@ def _persist_business_state() -> None:
     _state.update(_biz_state_path, {
         "contact_topics": _state.encode_int_keys(_contact_topics),
         "admin_topics": _admin_topics,
+        "admin_supergroup_id": _admin_supergroup_id,
     })
 
 
@@ -78,6 +83,9 @@ def init_business_state(path: Path, data: dict) -> None:
     raw_admin = data.get("admin_topics", {})
     if isinstance(raw_admin, dict):
         _admin_topics.update(raw_admin)
+
+    global _admin_supergroup_id
+    _admin_supergroup_id = data.get("admin_supergroup_id") or None
 
     logger.info(
         "Business state restored: %d contacts, %d admin topics",
@@ -868,6 +876,13 @@ async def handle_private_message(
     chat_type = getattr(message.chat, "type", None)
     is_owner_mode = is_admin and chat_type in ("private", "supergroup")
 
+    # Remember supergroup chat_id so we can route to forum topics even from DMs
+    global _admin_supergroup_id
+    if is_owner_mode and chat_type == "supergroup" and _admin_supergroup_id != message.chat.id:
+        _admin_supergroup_id = message.chat.id
+        _persist_business_state()
+        logger.info("Recorded admin supergroup chat_id=%d", _admin_supergroup_id)
+
     # ── Meter readings: triggered by prefix «Показания» ────────────────────
     if is_owner_mode and meters_client is not None and text.lstrip().lower().startswith("показания"):
         try:
@@ -897,49 +912,55 @@ async def handle_private_message(
     if is_owner_mode and insta_downloader is not None:
         _insta_url = _detect_insta_url(text)
         if _insta_url:
-            # Determine target topic: use/create "📸 Instagram" in supergroup,
-            # or fall back to the current thread for private DMs.
-            # Key includes chat_id so each supergroup gets its own topic.
-            _insta_thread_id = message.message_thread_id
-            if chat_type == "supergroup":
-                _insta_key = f"📸 Instagram:{message.chat.id}"
+            # Determine target topic: use/create "📸 Instagram" in the business
+            # supergroup. Works both when Denis sends from the supergroup directly
+            # AND from a private DM (we use the remembered _admin_supergroup_id).
+            _insta_send_chat = (
+                message.chat.id if chat_type == "supergroup" else _admin_supergroup_id
+            )
+            _insta_thread_id = message.message_thread_id  # fallback if no forum
+            if _insta_send_chat is not None:
+                _insta_key = f"📸 Instagram:{_insta_send_chat}"
                 _insta_thread_id = _admin_topics.get(_insta_key)
                 if _insta_thread_id is None:
                     try:
                         _insta_t = await bot.create_forum_topic(
-                            chat_id=message.chat.id, name="📸 Instagram"
+                            chat_id=_insta_send_chat, name="📸 Instagram"
                         )
                         _insta_thread_id = _insta_t.message_thread_id
                         _admin_topics[_insta_key] = _insta_thread_id
                         _persist_business_state()
                         logger.info("Created Instagram topic chat=%d id=%d",
-                                    message.chat.id, _insta_thread_id)
+                                    _insta_send_chat, _insta_thread_id)
                     except Exception as _te:
                         logger.warning("create Instagram topic failed: %s", _te)
+                        _insta_send_chat = None
                         _insta_thread_id = message.message_thread_id
+            else:
+                _insta_send_chat = message.chat.id  # true private DM, no forum known
 
             try:
                 await bot.send_chat_action(
-                    chat_id=message.chat.id, action="upload_video",
+                    chat_id=_insta_send_chat, action="upload_video",
                     message_thread_id=_insta_thread_id,
                 )
             except Exception:
                 pass
             _wait_msg = await bot.send_message(
-                chat_id=message.chat.id,
+                chat_id=_insta_send_chat,
                 text="⏬ Скачиваю...",
                 message_thread_id=_insta_thread_id,
                 parse_mode=None,
             )
             _media_files = await insta_downloader.download(_insta_url)
             try:
-                await bot.delete_message(chat_id=message.chat.id, message_id=_wait_msg.message_id)
+                await bot.delete_message(chat_id=_insta_send_chat, message_id=_wait_msg.message_id)
             except Exception:
                 pass
 
             if not _media_files:
                 await bot.send_message(
-                    chat_id=message.chat.id,
+                    chat_id=_insta_send_chat,
                     text="❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна.",
                     message_thread_id=_insta_thread_id,
                     parse_mode=None,
@@ -952,15 +973,15 @@ async def handle_private_message(
                     _f = _media_files[0]
                     _inp = FSInputFile(str(_f.path))
                     if _f.media_type == "photo":
-                        await bot.send_photo(message.chat.id, _inp,
+                        await bot.send_photo(_insta_send_chat, _inp,
                                              caption=_f.caption or None,
                                              message_thread_id=_insta_thread_id)
                     elif _f.media_type == "video":
-                        await bot.send_video(message.chat.id, _inp,
+                        await bot.send_video(_insta_send_chat, _inp,
                                              caption=_f.caption or None,
                                              message_thread_id=_insta_thread_id)
                     else:
-                        await bot.send_document(message.chat.id, _inp,
+                        await bot.send_document(_insta_send_chat, _inp,
                                                 caption=_f.caption or None,
                                                 message_thread_id=_insta_thread_id)
                 else:
@@ -973,12 +994,12 @@ async def handle_private_message(
                             _group.append(InputMediaPhoto(media=_inp, caption=_cap))
                         else:
                             _group.append(InputMediaVideo(media=_inp, caption=_cap))
-                    await bot.send_media_group(message.chat.id, _group,
+                    await bot.send_media_group(_insta_send_chat, _group,
                                                message_thread_id=_insta_thread_id)
             except Exception as _e:
                 logger.warning("Instagram send failed: %s", _e)
                 await bot.send_message(
-                    chat_id=message.chat.id,
+                    chat_id=_insta_send_chat,
                     text=f"⚠️ Скачал, но не смог отправить: {_e}",
                     message_thread_id=_insta_thread_id,
                     parse_mode=None,
