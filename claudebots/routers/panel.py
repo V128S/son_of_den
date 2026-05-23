@@ -97,13 +97,14 @@ def _persist_panel_state() -> None:
     _state.update(_state_path, {
         "panel_topics": _state.encode_int_keys(_panel_topics),
         "tasks_thread_id": _tasks_thread_id,
+        "last_thread_id": _last_thread_id,
         "panel_memories": list(_panel_memories),
     })
 
 
 def init_panel_state(path: Path, data: dict) -> None:
     """Restore panel topic state from persisted data.  Call once at startup."""
-    global _state_path, _tasks_thread_id
+    global _state_path, _tasks_thread_id, _last_thread_id
     _state_path = path
 
     raw_topics = data.get("panel_topics", {})
@@ -113,6 +114,10 @@ def init_panel_state(path: Path, data: dict) -> None:
     tasks_tid = data.get("tasks_thread_id")
     if isinstance(tasks_tid, int):
         _tasks_thread_id = tasks_tid
+
+    last_tid = data.get("last_thread_id")
+    if isinstance(last_tid, int):
+        _last_thread_id = last_tid
 
     mems = data.get("panel_memories", [])
     if isinstance(mems, list):
