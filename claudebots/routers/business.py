@@ -850,8 +850,8 @@ async def handle_private_message(
     chat_type = getattr(message.chat, "type", None)
     is_owner_mode = is_admin and chat_type in ("private", "supergroup")
 
-    # ── Meter readings: detect and write to Sheets before AI response ─────
-    if is_owner_mode and meters_client is not None and looks_like_meter_message(text):
+    # ── Meter readings: triggered by prefix «Показания» ────────────────────
+    if is_owner_mode and meters_client is not None and text.lstrip().lower().startswith("показания"):
         try:
             await bot.send_chat_action(
                 chat_id=message.chat.id, action="typing",
