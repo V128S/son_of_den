@@ -32,8 +32,16 @@ _last_thread_id: int | None = None
 _state_path: Path | None = None
 
 # Discussion settings
-MAX_DISCUSSION_MESSAGES = 4  # Shorter discussions, more focused
-DELAY_BETWEEN_MESSAGES = 1.5  # Delay between different bot messages
+MAX_DISCUSSION_MESSAGES = 4  # shorter discussions, more focused
+
+# Human-realistic timing — simulates reading, thinking, and composing time.
+# Tests zero these via the integration conftest autouse fixture.
+REPLY_DELAY_MIN: float = 15.0    # seconds between speakers (min)
+REPLY_DELAY_MAX: float = 35.0    # seconds between speakers (max)
+REVIVAL_DELAY_MIN: float = 30.0  # seconds for revival continuation (min)
+REVIVAL_DELAY_MAX: float = 70.0  # seconds for revival continuation (max)
+TYPING_DELAY_MIN: float = 2.0    # seconds of visible typing indicator (min)
+TYPING_DELAY_MAX: float = 4.5    # seconds of visible typing indicator (max)
 
 # Revival settings
 REVIVAL_INTERVAL_SECONDS = 7_200  # Default: every 2 hours
@@ -48,12 +56,9 @@ _tasks_thread_id: int | None = None
 
 # Instruction appended to every speaker turn — extracted to avoid repetition
 _SPEAKER_TURN_INSTRUCTION = (
-    "{name}, твой ход. Кратко (2-3 предложения).\n"
-    "- Развивай идеи других, добавляй свой взгляд\n"
-    "- Будь конструктивен: предлагай конкретику\n"
-    "- Спорь только если видишь реальную проблему\n"
-    "- Учитывай весь контекст обсуждения\n"
-    "- Без markdown"
+    "{name}, твой ход — 2-3 предложения живым языком.\n"
+    "Реагируй на то, что сказали другие: развивай, уточняй или мягко возражай. "
+    "Без заголовков и маркированных списков."
 )
 
 # Revival-specific instructions — casual, spontaneous feel
@@ -244,8 +249,17 @@ class PanelRoundRunner:
         return f"panel:{self.panel_chat_id}"
 
     async def _send(self, bot: Bot, text: str) -> None:
-        """Send message to the correct thread."""
+        """Send message with a typing indicator to simulate composing a response."""
         logger.debug("_send: chat=%s thread=%s len=%d", self.panel_chat_id, self.thread_id, len(text))
+        try:
+            await bot.send_chat_action(
+                chat_id=self.panel_chat_id,
+                action="typing",
+                message_thread_id=self.thread_id,
+            )
+            await asyncio.sleep(random.uniform(TYPING_DELAY_MIN, TYPING_DELAY_MAX))
+        except Exception:
+            pass  # typing indicator failure must not block the actual message
         await bot.send_message(
             self.panel_chat_id,
             text,
@@ -368,9 +382,11 @@ class PanelRoundRunner:
                 consecutive_failures = 0
                 logger.info("Discussion message %d/%d from %s", message_count, MAX_DISCUSSION_MESSAGES, persona.id)
 
-                # Delay between messages
+                # Human-like pause — next speaker reads and thinks before replying
                 if message_count < MAX_DISCUSSION_MESSAGES:
-                    await asyncio.sleep(DELAY_BETWEEN_MESSAGES)
+                    delay = random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX)
+                    logger.debug("Discussion: waiting %.0f s before next speaker", delay)
+                    await asyncio.sleep(delay)
             else:
                 consecutive_failures += 1
                 if consecutive_failures >= len(speakers):
@@ -384,7 +400,7 @@ class PanelRoundRunner:
         if mod is None:
             return
 
-        await asyncio.sleep(DELAY_BETWEEN_MESSAGES)
+        await asyncio.sleep(random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX))
 
         try:
             mod_client = self.ai_registry.get_client(mod.provider)
@@ -536,7 +552,7 @@ class PanelRoundRunner:
             )
             success = await self._speak_revival(persona, key, instruction)
             if success and i < len(participants) - 1:
-                await asyncio.sleep(DELAY_BETWEEN_MESSAGES)
+                await asyncio.sleep(random.uniform(REVIVAL_DELAY_MIN, REVIVAL_DELAY_MAX))
 
         logger.info("Revival complete")
 

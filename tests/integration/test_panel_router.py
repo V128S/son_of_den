@@ -9,7 +9,6 @@ async def test_full_round_calls_each_persona_in_order(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -41,7 +40,6 @@ async def test_full_round_calls_each_persona_in_order(
 
 async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -63,7 +61,6 @@ async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_
 
 async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -88,7 +85,6 @@ async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, 
 async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks, alerts_mock, monkeypatch):
     from claudebots.core.ai_registry import AIRegistry
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     client = MagicMock()
     side_effects = [
@@ -129,7 +125,6 @@ async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks
 async def test_moderator_failure_sends_fallback(personas, conv, bot_mocks, alerts_mock, monkeypatch):
     from claudebots.core.ai_registry import AIRegistry
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     client = MagicMock()
     side_effects = ["ok1", "ok2", "ok3", "ok4", RuntimeError("mod fail")]
@@ -163,7 +158,6 @@ async def test_revival_skipped_when_no_history(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     """run_revival() does nothing when conversation history is empty."""
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -185,7 +179,6 @@ async def test_revival_sends_2_or_3_messages(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     """run_revival() sends 2 or 3 short messages; no moderator summary."""
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     # Seed conversation history so revival has something to work with
     conv.add("panel:-1001", "user", "Тема: рост продаж в Q4")
@@ -218,7 +211,6 @@ async def test_revival_uses_shorter_max_tokens(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     """Revival calls complete() with max_tokens=120 (shorter than regular turns)."""
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     conv.add("panel:-1001", "user", "Тема: оптимизация процессов")
     conv.add("panel:-1001", "assistant", "[Creative]: попробуй автоматизацию")
@@ -248,7 +240,6 @@ async def test_revival_messages_go_to_correct_thread(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     """Revival messages are sent to the thread_id specified on the runner."""
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     conv.add("panel:-1001", "user", "Тема: маркетинг")
 
@@ -276,7 +267,6 @@ async def test_revival_history_updated_after_messages(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     """Conversation history grows by exactly the number of revival messages sent."""
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
 
     conv.add("panel:-1001", "user", "Тема: инвестиции")
     initial_len = len(conv.get("panel:-1001"))
@@ -313,7 +303,6 @@ async def test_action_items_posted_to_tasks_thread(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
     monkeypatch.setattr("claudebots.routers.panel._panel_topics", {})
@@ -365,7 +354,6 @@ async def test_no_action_items_when_ai_says_net(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
@@ -403,7 +391,6 @@ async def test_panel_memory_saved_after_round(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", [])
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
@@ -437,7 +424,6 @@ async def test_panel_memory_capped_at_max(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
     # Pre-fill with PANEL_MEMORY_MAX entries
     initial = [f"memory {i}" for i in range(panel_mod.PANEL_MEMORY_MAX)]
@@ -472,7 +458,6 @@ async def test_memory_injected_into_next_round_context(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.DELAY_BETWEEN_MESSAGES", 0)
     monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 1)
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", ["Прошлый вывод: X важнее Y."])
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
