@@ -18,7 +18,7 @@ from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
 from claudebots.routers.admin import PersonaHolder, admin_router
 from claudebots.routers.business import business_router, start_digest_scheduler, init_business_state
-from claudebots.routers.panel import panel_router, start_revival_scheduler, init_panel_state
+from claudebots.routers.panel import panel_router, start_revival_scheduler, init_panel_state, start_reminder_checker
 from claudebots.core.feed_monitor import start_feed_monitor
 from claudebots.core import state as _state
 
@@ -238,6 +238,12 @@ async def amain() -> None:
             digest_time=settings.contact_digest_time,
         )
 
+    # Start reminder checker (re-surfaces action items after 18-20 h)
+    reminder_task: asyncio.Task[None] = start_reminder_checker(
+        bots=bots,
+        panel_chat_id=settings.panel_chat_id,
+    )
+
     # Start feed monitor (auto-topics from Telegram channel RSS)
     feed_task: asyncio.Task[None] | None = None
     feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
@@ -280,6 +286,11 @@ async def amain() -> None:
                 await digest_task
             except asyncio.CancelledError:
                 pass
+        reminder_task.cancel()
+        try:
+            await reminder_task
+        except asyncio.CancelledError:
+            pass
         if feed_task is not None:
             feed_task.cancel()
             try:

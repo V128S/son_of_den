@@ -3,6 +3,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -46,6 +47,10 @@ TYPING_DELAY_MAX: float = 4.5    # seconds of visible typing indicator (max)
 # Revival settings
 REVIVAL_INTERVAL_SECONDS = 7_200  # Default: every 2 hours
 REVIVAL_JITTER_SECONDS = 1_800    # ±30 min randomness
+
+# Reminder timing — tasks are re-surfaced this many hours after posting
+REMINDER_MIN_HOURS: float = 18.0
+REMINDER_MAX_HOURS: float = 20.0
 
 # Panel memory: compact takeaways from past rounds
 _panel_memories: list[str] = []
@@ -447,7 +452,7 @@ class PanelRoundRunner:
         await self._save_panel_memory(key)
 
     async def _extract_action_items(self, key: str, topic: str) -> None:
-        """Extract concrete tasks from the discussion and post to ✅ Задачи topic."""
+        """Extract up to 3 concrete tasks and post to ✅ Задачи; schedule a reminder."""
         mod = self.personas.moderator
         if mod is None:
             return
@@ -457,16 +462,17 @@ class PanelRoundRunner:
             messages.append({
                 "role": "user",
                 "content": (
-                    "Выдели КОНКРЕТНЫЕ задачи или следующие шаги из этого обсуждения — "
-                    "только реально озвученные действия, без домыслов. "
-                    "Формат: нумерованный список. "
+                    "Выдели до 3 конкретных задач из этого обсуждения — "
+                    "только реально озвученные действия. "
+                    "Формат: нумерованный список, максимум 3 пункта, "
+                    "каждый — одно короткое предложение. "
                     "Если конкретных задач нет — ответь одним словом: нет"
                 ),
             })
             raw = await client.complete(
-                system="Выделяй action items из обсуждения. Отвечай списком или словом 'нет'.",
+                system="Выделяй action items из обсуждения. Отвечай списком (до 3 пунктов) или словом 'нет'.",
                 messages=messages,
-                max_tokens=300,
+                max_tokens=120,
             )
             result = clean_markdown(raw).strip()
             if not result or result.lower().rstrip(".") in ("нет", "no", "none"):
@@ -481,6 +487,27 @@ class PanelRoundRunner:
             msg = f"📌 Задачи из «{topic[:60]}»:\n\n{result}"
             await moderator_bot.send_message(self.panel_chat_id, msg, message_thread_id=tid)
             logger.info("Action items posted to tasks thread %d", tid)
+
+            # Schedule a reminder 18-20 h later
+            if _state_path is not None:
+                remind_ts = (
+                    datetime.now(timezone.utc).timestamp()
+                    + random.uniform(REMINDER_MIN_HOURS * 3600, REMINDER_MAX_HOURS * 3600)
+                )
+                data = _state.load(_state_path)
+                pending: list[dict] = data.get("pending_reminders", [])
+                pending.append({
+                    "remind_at": remind_ts,
+                    "thread_id": tid,
+                    "text": result,
+                    "topic": topic[:60],
+                })
+                _state.update(_state_path, {"pending_reminders": pending})
+                logger.info(
+                    "Task reminder scheduled in %.0f h (thread=%s)",
+                    (remind_ts - datetime.now(timezone.utc).timestamp()) / 3600,
+                    tid,
+                )
 
         except Exception as e:
             logger.warning("Action items extraction failed: %s", e)
@@ -649,6 +676,88 @@ def start_revival_scheduler(
     )
     return task
 
+
+
+# ---------------------------------------------------------------------------
+# Reminder checker
+# ---------------------------------------------------------------------------
+
+async def _fire_due_reminders(bots: dict, panel_chat_id: int) -> None:
+    """Post any pending task reminders that are now due."""
+    if _state_path is None:
+        return
+    data = _state.load(_state_path)
+    pending: list[dict] = data.get("pending_reminders", [])
+    if not pending:
+        return
+
+    now = datetime.now(timezone.utc).timestamp()
+    still_pending: list[dict] = []
+
+    for reminder in pending:
+        if now < reminder.get("remind_at", 0):
+            still_pending.append(reminder)
+            continue
+
+        thread_id = reminder.get("thread_id")
+        text = reminder.get("text", "").strip()
+        topic = reminder.get("topic", "")
+        if not text:
+            continue
+
+        try:
+            mod_bot = bots.get("moderator")
+            if mod_bot is None:
+                still_pending.append(reminder)
+                continue
+            header = f"из «{topic}»" if topic else "о задачах"
+            msg = f"🔔 Напоминание {header}:\n\n{text}"
+            await mod_bot.send_message(panel_chat_id, msg, message_thread_id=thread_id)
+            logger.info("Reminder posted to thread %s (topic=%r)", thread_id, topic)
+        except Exception as e:
+            logger.warning("Failed to post reminder (thread=%s): %s", thread_id, e)
+            still_pending.append(reminder)  # retry on next check
+
+    _state.update(_state_path, {"pending_reminders": still_pending})
+
+
+async def _reminder_loop(bots: dict, panel_chat_id: int, check_interval_seconds: int) -> None:
+    """Background task: check for due reminders on a fixed interval."""
+    # Immediate check on startup — picks up reminders that survived a restart
+    try:
+        await _fire_due_reminders(bots, panel_chat_id)
+    except Exception as e:
+        logger.warning("Initial reminder check error: %s", e)
+
+    while True:
+        await asyncio.sleep(check_interval_seconds)
+        try:
+            await _fire_due_reminders(bots, panel_chat_id)
+        except Exception as e:
+            logger.warning("Reminder loop error: %s", e)
+
+
+def start_reminder_checker(
+    bots: dict,
+    panel_chat_id: int,
+    check_interval_seconds: int = 1800,
+) -> "asyncio.Task[None]":
+    """Create and start the reminder background task.
+
+    Checks for due task reminders every *check_interval_seconds* (default 30 min).
+    Cancel the returned task on shutdown.
+    """
+    task: asyncio.Task[None] = asyncio.create_task(
+        _reminder_loop(bots, panel_chat_id, check_interval_seconds)
+    )
+    task.add_done_callback(
+        lambda t: logger.warning("Reminder loop raised: %s", t.exception())
+        if not t.cancelled() and t.exception() else None
+    )
+    logger.info(
+        "Reminder checker started (check_interval=%.0f min)", check_interval_seconds / 60
+    )
+    return task
 
 # ---------------------------------------------------------------------------
 # Panel message handler
