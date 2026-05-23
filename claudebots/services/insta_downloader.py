@@ -129,9 +129,11 @@ class InstagramDownloader:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
             logger.warning("yt-dlp extract_info failed: %s", e)
+            shutil.rmtree(tmpdir, ignore_errors=True)
             return []
 
         if info is None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
             return []
 
         # Flatten: handle both single item and playlist (carousel)

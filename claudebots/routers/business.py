@@ -922,9 +922,17 @@ async def handle_private_message(
             _insta_send_chat = (
                 message.chat.id if chat_type == "supergroup" else _admin_supergroup_id
             )
-            
-            # Only use/create forum topics if sending to a supergroup
-            is_target_supergroup = (_insta_send_chat == message.chat.id and chat_type == "supergroup") or (_insta_send_chat == _admin_supergroup_id) or (_insta_send_chat == panel_chat_id)
+
+            # Only use/create forum topics if we have a real supergroup target.
+            # Guard against None == None (when _admin_supergroup_id not yet known).
+            is_target_supergroup = (
+                (_insta_send_chat is not None)
+                and (
+                    (chat_type == "supergroup" and _insta_send_chat == message.chat.id)
+                    or (_admin_supergroup_id is not None and _insta_send_chat == _admin_supergroup_id)
+                    or (panel_chat_id is not None and _insta_send_chat == panel_chat_id)
+                )
+            )
 
             # Determine which bot instance to use: if sending to panel supergroup, use panel_bot (Moderator)
             # which has access there. Otherwise use business bot.
@@ -1113,10 +1121,14 @@ async def handle_private_message(
             _yt_send_chat = (
                 message.chat.id if chat_type == "supergroup" else _admin_supergroup_id
             )
+            # Guard against None == None (when _admin_supergroup_id not yet known).
             _is_yt_supergroup = (
-                (_yt_send_chat == message.chat.id and chat_type == "supergroup")
-                or (_yt_send_chat == _admin_supergroup_id)
-                or (_yt_send_chat == panel_chat_id)
+                (_yt_send_chat is not None)
+                and (
+                    (chat_type == "supergroup" and _yt_send_chat == message.chat.id)
+                    or (_admin_supergroup_id is not None and _yt_send_chat == _admin_supergroup_id)
+                    or (panel_chat_id is not None and _yt_send_chat == panel_chat_id)
+                )
             )
             _yt_bot = panel_bot if (_yt_send_chat == panel_chat_id and panel_bot is not None) else bot
             _yt_thread_id: int | None = message.message_thread_id

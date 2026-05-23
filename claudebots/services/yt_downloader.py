@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import re as _re
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,12 +26,13 @@ logger = logging.getLogger(__name__)
 # Telegram Bot API upload limit for audio/documents
 _TG_AUDIO_LIMIT = 50 * 1024 * 1024  # 50 MB
 
-# Regex: matches /watch?v=... and youtu.be/... but NOT /shorts/, /playlist?, /channel/
-
+# Regex: matches watch?v=... and youtu.be/... URLs.
+# Requires https?:// to avoid false-positives on e.g. "notyoutube.com".
+# Explicitly rejects /shorts/, /playlist?, /channel/ paths.
 _YT_RE = _re.compile(
-    r"(?:https?://)?(?:www\.)?(?:"
-    r"youtube\.com/watch\?(?:[^#\s]*&)*v=([A-Za-z0-9_-]{4,12})[^\s]*"
-    r"|youtu\.be/([A-Za-z0-9_-]{4,12})[^\s]*"
+    r"https?://(?:www\.)?(?:"
+    r"youtube\.com/watch\?(?:[^#\s]*&)*v=([A-Za-z0-9_-]{11})[^\s]*"
+    r"|youtu\.be/([A-Za-z0-9_-]{11})[^\s]*"
     r")",
     _re.IGNORECASE,
 )
@@ -40,6 +42,7 @@ def detect_url(text: str) -> str | None:
     """Return the first YouTube video URL found in *text*, or None.
 
     Shorts (/shorts/), playlists (/playlist?) and channel pages are ignored.
+    Requires https?:// prefix — bare domain strings are not matched.
     """
     for m in _YT_RE.finditer(text):
         return m.group(0)
@@ -85,7 +88,7 @@ class YTDownloader:
                 timeout=self.timeout,
             )
             return result
-        except TimeoutError:
+        except asyncio.TimeoutError:
             logger.warning("YouTube download timed out: %s", url)
             return None
         except Exception as e:
@@ -94,21 +97,13 @@ class YTDownloader:
 
     @staticmethod
     def cleanup(file: AudioFile | None) -> None:
-        """Remove a downloaded audio file and its parent temp directory (if empty)."""
+        """Remove a downloaded audio file and its entire parent temp directory."""
         if file is None:
             return
         try:
-            if file.path.exists():
-                file.path.unlink()
+            shutil.rmtree(file.path.parent, ignore_errors=True)
         except Exception as e:
-            logger.debug("cleanup: %s — %s", file.path, e)
-        # Remove parent dir if it is now empty
-        try:
-            parent = file.path.parent
-            if parent.exists() and not any(parent.iterdir()):
-                parent.rmdir()
-        except Exception:
-            pass
+            logger.debug("cleanup: %s — %s", file.path.parent, e)
 
     # ------------------------------------------------------------------
     # Internal sync download (runs in thread pool)
@@ -124,7 +119,7 @@ class YTDownloader:
             "quiet": True,
             "no_warnings": True,
             "ignoreerrors": False,
-            "noplaylist": True,   # single video only — reject playlists
+            "noplaylist": True,  # single video only — reject playlists
             "writethumbnail": False,
             "writeinfojson": False,
             # No postprocessors → no re-encoding, native quality preserved
@@ -135,9 +130,11 @@ class YTDownloader:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
             logger.warning("yt-dlp extract_info failed for %s: %s", url, e)
+            shutil.rmtree(tmpdir, ignore_errors=True)
             return None
 
         if info is None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
             return None
 
         video_id = info.get("id", "")
@@ -147,6 +144,7 @@ class YTDownloader:
         downloaded = self._find_downloaded(tmpdir, video_id)
         if downloaded is None:
             logger.warning("No audio file found in tmpdir after yt-dlp download")
+            shutil.rmtree(tmpdir, ignore_errors=True)
             return None
 
         return AudioFile(path=downloaded, title=title, duration_s=duration_s)

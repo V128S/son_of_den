@@ -28,10 +28,19 @@ class TestDetectUrl:
         assert detect_url(text) == "https://youtu.be/dQw4w9WgXcQ"
 
     def test_detects_without_www(self):
-        text = "Посмотри: youtube.com/watch?v=abc123"
+        # Protocol required; bare domain without https:// is NOT matched (prevents false positives)
+        text = "Посмотри: https://youtube.com/watch?v=dQw4w9WgXcQ"
         result = detect_url(text)
         assert result is not None
-        assert "abc123" in result
+        assert "dQw4w9WgXcQ" in result
+
+    def test_does_not_match_without_protocol(self):
+        text = "youtube.com/watch?v=dQw4w9WgXcQ"
+        assert detect_url(text) is None
+
+    def test_does_not_match_fake_domain(self):
+        text = "https://notyoutube.com/watch?v=dQw4w9WgXcQ"
+        assert detect_url(text) is None
 
     def test_ignores_shorts(self):
         text = "https://www.youtube.com/shorts/dQw4w9WgXcQ"
@@ -50,11 +59,11 @@ class TestDetectUrl:
 
     def test_returns_first_url_when_multiple(self):
         text = (
-            "https://youtu.be/AAA33300000 и ещё "
-            "https://www.youtube.com/watch?v=BBBbbb00000"
+            "https://youtu.be/dQw4w9WgXcQ и ещё "
+            "https://www.youtube.com/watch?v=9bZkp7q19f0"
         )
         result = detect_url(text)
-        assert result == "https://youtu.be/AAA33300000"
+        assert result == "https://youtu.be/dQw4w9WgXcQ"
 
     def test_youtu_be_with_timestamp(self):
         text = "https://youtu.be/dQw4w9WgXcQ?t=42"
