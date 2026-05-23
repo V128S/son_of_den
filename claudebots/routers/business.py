@@ -413,6 +413,13 @@ async def _on_private_message(
     if message.business_connection_id:
         return
 
+    # /help — highest priority, before everything else
+    if message.from_user and message.from_user.id == settings.admin_user_id:
+        t = (message.text or "").strip().lower()
+        if t in ("/help", "help") or t.startswith("/help ") or t.startswith("help "):
+            await message.answer(_HELP_TEXT, parse_mode="Markdown")
+            return
+
     await handle_private_message(
         message=message,
         bot=bot,
