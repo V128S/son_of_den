@@ -918,13 +918,21 @@ async def handle_private_message(
             _insta_send_chat = (
                 message.chat.id if chat_type == "supergroup" else _admin_supergroup_id
             )
+            
+            # Only use/create forum topics if sending to a supergroup
+            is_target_supergroup = (_insta_send_chat == message.chat.id and chat_type == "supergroup") or (_insta_send_chat == _admin_supergroup_id) or (_insta_send_chat == panel_chat_id)
+
+            # Determine which bot instance to use: if sending to panel supergroup, use panel_bot (Moderator)
+            # which has access there. Otherwise use business bot.
+            _insta_bot = panel_bot if (_insta_send_chat == panel_chat_id and panel_bot is not None) else bot
+
             _insta_thread_id = message.message_thread_id  # fallback if no forum
-            if _insta_send_chat is not None:
+            if _insta_send_chat is not None and is_target_supergroup:
                 _insta_key = f"📸 Instagram:{_insta_send_chat}"
                 _insta_thread_id = _admin_topics.get(_insta_key)
                 if _insta_thread_id is None:
                     try:
-                        _insta_t = await bot.create_forum_topic(
+                        _insta_t = await _insta_bot.create_forum_topic(
                             chat_id=_insta_send_chat, name="📸 Instagram"
                         )
                         _insta_thread_id = _insta_t.message_thread_id
@@ -934,32 +942,80 @@ async def handle_private_message(
                                     _insta_send_chat, _insta_thread_id)
                     except Exception as _te:
                         logger.warning("create Instagram topic failed: %s", _te)
-                        _insta_send_chat = None
+                        _insta_send_chat = message.chat.id
                         _insta_thread_id = message.message_thread_id
             else:
-                _insta_send_chat = message.chat.id  # true private DM, no forum known
+                # Private chat or no supergroup: send directly to the DM without topics
+                if _insta_send_chat is None:
+                    _insta_send_chat = message.chat.id
+                _insta_thread_id = None
 
             try:
-                await bot.send_chat_action(
+                await _insta_bot.send_chat_action(
                     chat_id=_insta_send_chat, action="upload_video",
                     message_thread_id=_insta_thread_id,
                 )
             except Exception:
                 pass
-            _wait_msg = await bot.send_message(
-                chat_id=_insta_send_chat,
-                text="⏬ Скачиваю...",
-                message_thread_id=_insta_thread_id,
-                parse_mode=None,
-            )
+
+            _wait_msg = None
+            try:
+                _wait_msg = await _insta_bot.send_message(
+                    chat_id=_insta_send_chat,
+                    text="⏬ Скачиваю...",
+                    message_thread_id=_insta_thread_id,
+                    parse_mode=None,
+                )
+            except Exception as _we:
+                # If the thread ID was deleted or invalid in Telegram, recover by creating a new topic
+                logger.warning("Failed to send download message to topic %s: %s. Retrying with a new topic.", _insta_thread_id, _we)
+                if is_target_supergroup:
+                    _admin_topics.pop(_insta_key, None)
+                    try:
+                        _insta_t = await _insta_bot.create_forum_topic(
+                            chat_id=_insta_send_chat, name="📸 Instagram"
+                        )
+                        _insta_thread_id = _insta_t.message_thread_id
+                        _admin_topics[_insta_key] = _insta_thread_id
+                        _persist_business_state()
+                        logger.info("Re-created Instagram topic chat=%d id=%d",
+                                    _insta_send_chat, _insta_thread_id)
+                        
+                        _wait_msg = await _insta_bot.send_message(
+                            chat_id=_insta_send_chat,
+                            text="⏬ Скачиваю...",
+                            message_thread_id=_insta_thread_id,
+                            parse_mode=None,
+                        )
+                    except Exception as _retry_err:
+                        logger.error("Failed to recover Instagram topic: %s", _retry_err)
+                        _insta_send_chat = message.chat.id
+                        _insta_thread_id = message.message_thread_id
+                        _wait_msg = await _insta_bot.send_message(
+                            chat_id=_insta_send_chat,
+                            text="⏬ Скачиваю...",
+                            message_thread_id=_insta_thread_id,
+                            parse_mode=None,
+                        )
+                else:
+                    _insta_send_chat = message.chat.id
+                    _insta_thread_id = message.message_thread_id
+                    _wait_msg = await _insta_bot.send_message(
+                        chat_id=_insta_send_chat,
+                        text="⏬ Скачиваю...",
+                        message_thread_id=_insta_thread_id,
+                        parse_mode=None,
+                    )
+
             _media_files = await insta_downloader.download(_insta_url)
             try:
-                await bot.delete_message(chat_id=_insta_send_chat, message_id=_wait_msg.message_id)
+                if _wait_msg:
+                    await _insta_bot.delete_message(chat_id=_insta_send_chat, message_id=_wait_msg.message_id)
             except Exception:
                 pass
 
             if not _media_files:
-                await bot.send_message(
+                await _insta_bot.send_message(
                     chat_id=_insta_send_chat,
                     text="❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна.",
                     message_thread_id=_insta_thread_id,
@@ -973,15 +1029,15 @@ async def handle_private_message(
                     _f = _media_files[0]
                     _inp = FSInputFile(str(_f.path))
                     if _f.media_type == "photo":
-                        await bot.send_photo(_insta_send_chat, _inp,
+                        await _insta_bot.send_photo(_insta_send_chat, _inp,
                                              caption=_f.caption or None,
                                              message_thread_id=_insta_thread_id)
                     elif _f.media_type == "video":
-                        await bot.send_video(_insta_send_chat, _inp,
+                        await _insta_bot.send_video(_insta_send_chat, _inp,
                                              caption=_f.caption or None,
                                              message_thread_id=_insta_thread_id)
                     else:
-                        await bot.send_document(_insta_send_chat, _inp,
+                        await _insta_bot.send_document(_insta_send_chat, _inp,
                                                 caption=_f.caption or None,
                                                 message_thread_id=_insta_thread_id)
                 else:
@@ -994,16 +1050,53 @@ async def handle_private_message(
                             _group.append(InputMediaPhoto(media=_inp, caption=_cap))
                         else:
                             _group.append(InputMediaVideo(media=_inp, caption=_cap))
-                    await bot.send_media_group(_insta_send_chat, _group,
+                    await _insta_bot.send_media_group(_insta_send_chat, _group,
                                                message_thread_id=_insta_thread_id)
+
+                # Send private confirmation if we routed it from private DM to the supergroup
+                if chat_type == "private" and _insta_send_chat != message.chat.id:
+                    try:
+                        await bot.send_message(
+                            chat_id=message.chat.id,
+                            text="✅ Скачал и отправил в топик 📸 Instagram",
+                            parse_mode=None,
+                        )
+                    except Exception as _pe:
+                        logger.debug("Failed to send private Instagram confirmation: %s", _pe)
+
+                # If we routed this to the permanent Instagram topic, and it was sent
+                # in a different/new forum topic, close the source forum topic so it
+                # doesn't clutter the group.
+                if chat_type == "supergroup" and message.message_thread_id:
+                    if (
+                        _insta_thread_id is not None
+                        and message.message_thread_id != _insta_thread_id
+                        and message.message_thread_id not in _admin_topics.values()
+                        and message.message_thread_id not in _topic_contacts
+                    ):
+                        import asyncio as _aio
+                        _t = _aio.create_task(_close_topic_async(bot, message.chat.id, message.message_thread_id))
+                        _t.add_done_callback(
+                            lambda t: logger.warning("close_topic task for Instagram link raised: %s", t.exception())
+                            if not t.cancelled() and t.exception() else None
+                        )
             except Exception as _e:
                 logger.warning("Instagram send failed: %s", _e)
-                await bot.send_message(
+                await _insta_bot.send_message(
                     chat_id=_insta_send_chat,
                     text=f"⚠️ Скачал, но не смог отправить: {_e}",
                     message_thread_id=_insta_thread_id,
                     parse_mode=None,
                 )
+                if chat_type == "private" and _insta_send_chat != message.chat.id:
+                    try:
+                        await bot.send_message(
+                            chat_id=message.chat.id,
+                            text=f"⚠️ Не удалось отправить в топик: {_e}",
+                            parse_mode=None,
+                        )
+                    except Exception:
+                        pass
             finally:
                 insta_downloader.cleanup(_media_files)
             return
