@@ -160,7 +160,7 @@ class MetersClient:
         new = last + 1
         row = [
             date_str,
-            str(reading),
+            str(int(reading) if reading == int(reading) else reading),
             f"=B{new}-B{last}",   # Расход = текущий - предыдущий
             f"=D{last}",           # $ = тариф из прошлой строки
             f"=C{new}*D{new}",    # Итого = Расход * $
@@ -175,7 +175,7 @@ class MetersClient:
         new = last + 1
         row = [
             date_str,
-            str(reading),
+            str(int(reading) if reading == int(reading) else reading),
             f"=B{new}-B{last}",
             f"=D{last}",
             f"=C{new}*D{new}",
@@ -190,8 +190,8 @@ class MetersClient:
         new = last + 1
         row = [
             date_str,
-            str(day),
-            str(night),
+            str(int(day) if day == int(day) else day),
+            str(int(night) if night == int(night) else night),
             f"=B{new}+C{new}",        # Факт = День + Ночь
             f"=D{new}-D{last}",       # Расход = текущий Факт - предыдущий Факт
             f"=F{last}",               # $ = тариф из прошлой строки
