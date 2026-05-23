@@ -14,6 +14,8 @@ import asyncio
 import logging
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,6 +112,7 @@ class InstagramDownloader:
         ydl_opts = {
             "outtmpl": os.path.join(tmpdir, "%(autonumber)s_%(id)s.%(ext)s"),
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "merge_output_format": "mp4",
             "quiet": True,
             "no_warnings": True,
             "ignoreerrors": True,
@@ -144,11 +147,55 @@ class InstagramDownloader:
             if not downloaded:
                 continue
 
+            # Re-encode video files to H.264/AAC with faststart for Telegram playback
+            if downloaded.suffix.lower() in (".mp4", ".mov", ".m4v", ".webm", ".mkv"):
+                downloaded = self._reencode_for_telegram(downloaded)
+
             ftype = self._classify(downloaded, ext)
             caption = (entry.get("title") or entry.get("description") or "")[:200]
             result.append(MediaFile(path=downloaded, media_type=ftype, caption=caption))
 
         return result
+
+    @staticmethod
+    def _reencode_for_telegram(src_path: Path) -> Path:
+        """Re-encode video to H.264/AAC with faststart moov atom for Telegram playback.
+
+        Returns the re-encoded path (replaces the original). Falls back to the
+        original file if ffmpeg is unavailable or encoding fails.
+        """
+        if not shutil.which("ffmpeg"):
+            logger.debug("ffmpeg not found — skipping re-encode")
+            return src_path
+
+        dst_path = src_path.with_name(src_path.stem + "_tg.mp4")
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(src_path),
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            str(dst_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+            src_path.unlink(missing_ok=True)
+            logger.debug("Re-encoded %s → %s", src_path.name, dst_path.name)
+            return dst_path
+        except subprocess.CalledProcessError as e:
+            logger.warning(
+                "ffmpeg re-encode failed (stderr: %s) — using original",
+                e.stderr[-500:].decode(errors="replace") if e.stderr else "",
+            )
+            dst_path.unlink(missing_ok=True)
+            return src_path
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg re-encode timed out — using original")
+            dst_path.unlink(missing_ok=True)
+            return src_path
 
     # ------------------------------------------------------------------
     # Helpers

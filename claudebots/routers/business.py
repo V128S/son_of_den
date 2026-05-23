@@ -897,17 +897,35 @@ async def handle_private_message(
     if is_owner_mode and insta_downloader is not None:
         _insta_url = _detect_insta_url(text)
         if _insta_url:
+            # Determine target topic: use/create "📸 Instagram" in supergroup,
+            # or fall back to the current thread for private DMs.
+            _insta_thread_id = message.message_thread_id
+            if chat_type == "supergroup":
+                _insta_thread_id = _admin_topics.get("📸 Instagram")
+                if _insta_thread_id is None:
+                    try:
+                        _insta_t = await bot.create_forum_topic(
+                            chat_id=message.chat.id, name="📸 Instagram"
+                        )
+                        _insta_thread_id = _insta_t.message_thread_id
+                        _admin_topics["📸 Instagram"] = _insta_thread_id
+                        _persist_business_state()
+                        logger.info("Created Instagram topic (id=%d)", _insta_thread_id)
+                    except Exception as _te:
+                        logger.warning("create Instagram topic failed: %s", _te)
+                        _insta_thread_id = message.message_thread_id
+
             try:
                 await bot.send_chat_action(
                     chat_id=message.chat.id, action="upload_video",
-                    message_thread_id=message.message_thread_id,
+                    message_thread_id=_insta_thread_id,
                 )
             except Exception:
                 pass
             _wait_msg = await bot.send_message(
                 chat_id=message.chat.id,
                 text="⏬ Скачиваю...",
-                message_thread_id=message.message_thread_id,
+                message_thread_id=_insta_thread_id,
                 parse_mode=None,
             )
             _media_files = await insta_downloader.download(_insta_url)
@@ -920,7 +938,7 @@ async def handle_private_message(
                 await bot.send_message(
                     chat_id=message.chat.id,
                     text="❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна.",
-                    message_thread_id=message.message_thread_id,
+                    message_thread_id=_insta_thread_id,
                     parse_mode=None,
                 )
                 return
@@ -933,15 +951,15 @@ async def handle_private_message(
                     if _f.media_type == "photo":
                         await bot.send_photo(message.chat.id, _inp,
                                              caption=_f.caption or None,
-                                             message_thread_id=message.message_thread_id)
+                                             message_thread_id=_insta_thread_id)
                     elif _f.media_type == "video":
                         await bot.send_video(message.chat.id, _inp,
                                              caption=_f.caption or None,
-                                             message_thread_id=message.message_thread_id)
+                                             message_thread_id=_insta_thread_id)
                     else:
                         await bot.send_document(message.chat.id, _inp,
                                                 caption=_f.caption or None,
-                                                message_thread_id=message.message_thread_id)
+                                                message_thread_id=_insta_thread_id)
                 else:
                     # Carousel — send as media group (max 10)
                     _group = []
@@ -953,13 +971,13 @@ async def handle_private_message(
                         else:
                             _group.append(InputMediaVideo(media=_inp, caption=_cap))
                     await bot.send_media_group(message.chat.id, _group,
-                                               message_thread_id=message.message_thread_id)
+                                               message_thread_id=_insta_thread_id)
             except Exception as _e:
                 logger.warning("Instagram send failed: %s", _e)
                 await bot.send_message(
                     chat_id=message.chat.id,
                     text=f"⚠️ Скачал, но не смог отправить: {_e}",
-                    message_thread_id=message.message_thread_id,
+                    message_thread_id=_insta_thread_id,
                     parse_mode=None,
                 )
             finally:
