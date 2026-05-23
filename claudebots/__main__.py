@@ -15,6 +15,7 @@ from claudebots.core.gemini_client import GeminiClient
 from claudebots.core.groq_client import GroqClient
 from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.obsidian_client import ObsidianClient
+from claudebots.core.meters_client import MetersClient
 from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
@@ -176,6 +177,18 @@ async def amain() -> None:
     else:
         logger.info("Google Sheets client disabled (GOOGLE_SERVICE_ACCOUNT_FILE not set)")
 
+    # Meter readings client (enabled when service account + meter sheet ID configured)
+    meters_client: MetersClient | None = None
+    if settings.google_service_account_file and settings.meters_sheet_id:
+        meters_client = MetersClient(
+            service_account_file=settings.google_service_account_file,
+            sheet_id=settings.meters_sheet_id,
+            timezone_str=settings.user_timezone,
+        )
+        logger.info("Meters client enabled (sheet=%s...)", settings.meters_sheet_id[:8])
+    else:
+        logger.info("Meters client disabled (GOOGLE_SERVICE_ACCOUNT_FILE or METERS_SHEET_ID not set)")
+
     dp = Dispatcher()
 
     # Dependency injection via workflow_data — every handler receives these as kwargs
@@ -190,6 +203,7 @@ async def amain() -> None:
         calendar_client=calendar_client,
         obsidian_client=obsidian_client,
         sheets_client=sheets_client,
+        meters_client=meters_client,
     )
     # `claude` is only defined when ANTHROPIC_API_KEY is set
     if "claude" in dir() or "claude" in vars():

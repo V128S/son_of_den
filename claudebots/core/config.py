@@ -75,3 +75,7 @@ class Settings(BaseSettings):
     # Markup percentage applied to prices when transferring from contact's sheet to yours.
     sheets_markup_percent: float = 20.0
 
+    # Utility meter readings — Google Sheet ID for electricity/water/gas tracker.
+    # Leave empty to disable meter readings integration.
+    meters_sheet_id: str = "1qjpD22uRWRLV2s7JK_wYx6vc9BCnQFVdo996CYorf5M"
+

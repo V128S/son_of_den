@@ -19,6 +19,7 @@ from claudebots.core import state as _state
 from pathlib import Path
 from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
+from claudebots.core.meters_client import MetersClient, looks_like_meter_message, extract_meter_readings
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +405,8 @@ async def _on_private_message(
     alerts: AlertSender,
     settings,
     bots: dict[str, Bot],
-    calendar_client: GoogleCalendarClient | None = None,
+    calendar_client: "GoogleCalendarClient | None" = None,
+    meters_client: "MetersClient | None" = None,
 ) -> None:
     """Handle direct messages to the business bot in private chat or supergroup with topics."""
     # Skip if it's a business connection message (handled by other handler)
@@ -422,6 +424,7 @@ async def _on_private_message(
         panel_chat_id=settings.panel_chat_id,
         panel_bot=bots.get("moderator"),
         calendar_client=calendar_client,
+        meters_client=meters_client,
     )
 
 
@@ -800,6 +803,7 @@ async def handle_private_message(
     panel_chat_id: int | None = None,
     panel_bot: Bot | None = None,
     calendar_client: GoogleCalendarClient | None = None,
+    meters_client: "MetersClient | None" = None,
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
 ) -> None:
@@ -845,6 +849,31 @@ async def handle_private_message(
     # Owner mode: admin writing in private DM or any supergroup (including main thread)
     chat_type = getattr(message.chat, "type", None)
     is_owner_mode = is_admin and chat_type in ("private", "supergroup")
+
+    # ── Meter readings: detect and write to Sheets before AI response ─────
+    if is_owner_mode and meters_client is not None and looks_like_meter_message(text):
+        try:
+            await bot.send_chat_action(
+                chat_id=message.chat.id, action="typing",
+                message_thread_id=message.message_thread_id,
+            )
+        except Exception:
+            pass
+        readings = await extract_meter_readings(text, ai_registry)
+        if readings:
+            results = await meters_client.save_readings(readings)
+            reply = meters_client.format_confirmation(readings, results)
+            try:
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=reply,
+                    message_thread_id=message.message_thread_id,
+                    parse_mode=None,
+                )
+            except Exception as _me:
+                logger.warning("Meters reply failed: %s", _me)
+            # Still let the conversation continue normally (no early return)
+            # so the AI can also acknowledge/comment if needed
 
     # For supergroup: classify every owner message and ensure it lands in the right
     # category topic. Telegram Forums auto-create topics with the message text as the
