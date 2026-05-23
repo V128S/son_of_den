@@ -20,6 +20,7 @@ from pathlib import Path
 from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
 from claudebots.core.meters_client import MetersClient, looks_like_meter_message, extract_meter_readings
+from claudebots.services.insta_downloader import InstagramDownloader, detect_url as _detect_insta_url
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +415,7 @@ async def _on_private_message(
     bots: dict[str, Bot],
     calendar_client: "GoogleCalendarClient | None" = None,
     meters_client: "MetersClient | None" = None,
+    insta_downloader: "InstagramDownloader | None" = None,
 ) -> None:
     """Handle direct messages to the business bot in private chat or supergroup with topics."""
     # Skip if it's a business connection message (handled by other handler)
@@ -439,6 +441,7 @@ async def _on_private_message(
         panel_bot=bots.get("moderator"),
         calendar_client=calendar_client,
         meters_client=meters_client,
+        insta_downloader=insta_downloader,
     )
 
 
@@ -818,6 +821,7 @@ async def handle_private_message(
     panel_bot: Bot | None = None,
     calendar_client: GoogleCalendarClient | None = None,
     meters_client: "MetersClient | None" = None,
+    insta_downloader: "InstagramDownloader | None" = None,
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
 ) -> None:
@@ -888,6 +892,79 @@ async def handle_private_message(
                 logger.warning("Meters reply failed: %s", _me)
             # Still let the conversation continue normally (no early return)
             # so the AI can also acknowledge/comment if needed
+
+    # ── Instagram downloader ─────────────────────────────────────────────────
+    if is_owner_mode and insta_downloader is not None:
+        _insta_url = _detect_insta_url(text)
+        if _insta_url:
+            try:
+                await bot.send_chat_action(
+                    chat_id=message.chat.id, action="upload_video",
+                    message_thread_id=message.message_thread_id,
+                )
+            except Exception:
+                pass
+            _wait_msg = await bot.send_message(
+                chat_id=message.chat.id,
+                text="⏬ Скачиваю...",
+                message_thread_id=message.message_thread_id,
+                parse_mode=None,
+            )
+            _media_files = await insta_downloader.download(_insta_url)
+            try:
+                await bot.delete_message(chat_id=message.chat.id, message_id=_wait_msg.message_id)
+            except Exception:
+                pass
+
+            if not _media_files:
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text="❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна.",
+                    message_thread_id=message.message_thread_id,
+                    parse_mode=None,
+                )
+                return
+
+            from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
+            try:
+                if len(_media_files) == 1:
+                    _f = _media_files[0]
+                    _inp = FSInputFile(str(_f.path))
+                    if _f.media_type == "photo":
+                        await bot.send_photo(message.chat.id, _inp,
+                                             caption=_f.caption or None,
+                                             message_thread_id=message.message_thread_id)
+                    elif _f.media_type == "video":
+                        await bot.send_video(message.chat.id, _inp,
+                                             caption=_f.caption or None,
+                                             message_thread_id=message.message_thread_id)
+                    else:
+                        await bot.send_document(message.chat.id, _inp,
+                                                caption=_f.caption or None,
+                                                message_thread_id=message.message_thread_id)
+                else:
+                    # Carousel — send as media group (max 10)
+                    _group = []
+                    for _i, _f in enumerate(_media_files[:10]):
+                        _inp = FSInputFile(str(_f.path))
+                        _cap = _f.caption if _i == 0 else None
+                        if _f.media_type in ("photo", "document") and _f.path.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                            _group.append(InputMediaPhoto(media=_inp, caption=_cap))
+                        else:
+                            _group.append(InputMediaVideo(media=_inp, caption=_cap))
+                    await bot.send_media_group(message.chat.id, _group,
+                                               message_thread_id=message.message_thread_id)
+            except Exception as _e:
+                logger.warning("Instagram send failed: %s", _e)
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=f"⚠️ Скачал, но не смог отправить: {_e}",
+                    message_thread_id=message.message_thread_id,
+                    parse_mode=None,
+                )
+            finally:
+                insta_downloader.cleanup(_media_files)
+            return
 
     # For supergroup: classify every owner message and ensure it lands in the right
     # category topic. Telegram Forums auto-create topics with the message text as the

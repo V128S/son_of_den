@@ -16,6 +16,7 @@ from claudebots.core.groq_client import GroqClient
 from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.meters_client import MetersClient
+from claudebots.services.insta_downloader import InstagramDownloader
 from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
@@ -189,6 +190,10 @@ async def amain() -> None:
     else:
         logger.info("Meters client disabled (GOOGLE_SERVICE_ACCOUNT_FILE or METERS_SHEET_ID not set)")
 
+    # Instagram downloader (always available — uses yt-dlp, no credentials needed for public posts)
+    insta_downloader = InstagramDownloader(timeout=90.0)
+    logger.info("Instagram downloader enabled (yt-dlp, public posts and Reels only)")
+
     dp = Dispatcher()
 
     # Dependency injection via workflow_data — every handler receives these as kwargs
@@ -204,6 +209,7 @@ async def amain() -> None:
         obsidian_client=obsidian_client,
         sheets_client=sheets_client,
         meters_client=meters_client,
+        insta_downloader=insta_downloader,
     )
     # `claude` is only defined when ANTHROPIC_API_KEY is set
     if "claude" in dir() or "claude" in vars():
