@@ -1199,11 +1199,13 @@ async def handle_private_message(
                         pass
 
                 _yt_caption = _yt_audio.title[:200] if _yt_audio.title else None
+                from aiogram.types import FSInputFile as _FSInputFile
+                _yt_inp = _FSInputFile(str(_yt_audio.path))
 
                 if _yt_audio.send_as_audio:
                     await _yt_bot.send_audio(
                         chat_id=_yt_send_chat,
-                        audio=_yt_audio.path.open("rb"),
+                        audio=_yt_inp,
                         title=_yt_audio.title or None,
                         duration=_yt_audio.duration_s or None,
                         caption=_yt_caption,
@@ -1213,7 +1215,7 @@ async def handle_private_message(
                 else:
                     await _yt_bot.send_document(
                         chat_id=_yt_send_chat,
-                        document=_yt_audio.path.open("rb"),
+                        document=_yt_inp,
                         caption=_yt_caption,
                         message_thread_id=_yt_thread_id,
                         parse_mode=None,
