@@ -899,18 +899,21 @@ async def handle_private_message(
         if _insta_url:
             # Determine target topic: use/create "📸 Instagram" in supergroup,
             # or fall back to the current thread for private DMs.
+            # Key includes chat_id so each supergroup gets its own topic.
             _insta_thread_id = message.message_thread_id
             if chat_type == "supergroup":
-                _insta_thread_id = _admin_topics.get("📸 Instagram")
+                _insta_key = f"📸 Instagram:{message.chat.id}"
+                _insta_thread_id = _admin_topics.get(_insta_key)
                 if _insta_thread_id is None:
                     try:
                         _insta_t = await bot.create_forum_topic(
                             chat_id=message.chat.id, name="📸 Instagram"
                         )
                         _insta_thread_id = _insta_t.message_thread_id
-                        _admin_topics["📸 Instagram"] = _insta_thread_id
+                        _admin_topics[_insta_key] = _insta_thread_id
                         _persist_business_state()
-                        logger.info("Created Instagram topic (id=%d)", _insta_thread_id)
+                        logger.info("Created Instagram topic chat=%d id=%d",
+                                    message.chat.id, _insta_thread_id)
                     except Exception as _te:
                         logger.warning("create Instagram topic failed: %s", _te)
                         _insta_thread_id = message.message_thread_id

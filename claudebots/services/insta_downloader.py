@@ -172,6 +172,10 @@ class InstagramDownloader:
         cmd = [
             "ffmpeg", "-y",
             "-i", str(src_path),
+            # Bake SAR into pixel dimensions so Telegram displays correctly.
+            # trunc(iw*sar/2)*2 → display width rounded down to even number.
+            # Without this, anamorphic Instagram videos appear squished.
+            "-vf", "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1",
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "23",
