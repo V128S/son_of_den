@@ -6,25 +6,31 @@ from aiogram import Dispatcher
 from aiogram.types import ErrorEvent
 
 from claudebots.bots import create_all_bots
+from claudebots.core import state as _state
 from claudebots.core.ai_registry import AIClient, AIRegistry
 from claudebots.core.alerts import AlertSender
+from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.claude_client import ClaudeClient
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
+from claudebots.core.feed_monitor import start_feed_monitor
 from claudebots.core.gemini_client import GeminiClient
 from claudebots.core.groq_client import GroqClient
-from claudebots.core.calendar_client import GoogleCalendarClient
-from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.meters_client import MetersClient
-from claudebots.services.insta_downloader import InstagramDownloader
-from claudebots.core.sheets_client import GoogleSheetsClient
+from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
+from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.routers.admin import PersonaHolder, admin_router
-from claudebots.routers.business import business_router, start_digest_scheduler, init_business_state
-from claudebots.routers.panel import panel_router, start_revival_scheduler, init_panel_state, start_reminder_checker
-from claudebots.core.feed_monitor import start_feed_monitor
-from claudebots.core import state as _state
+from claudebots.routers.business import business_router, init_business_state, start_digest_scheduler
+from claudebots.routers.panel import (
+    init_panel_state,
+    panel_router,
+    start_reminder_checker,
+    start_revival_scheduler,
+)
+from claudebots.services.insta_downloader import InstagramDownloader
+from claudebots.services.yt_downloader import YTDownloader
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +200,10 @@ async def amain() -> None:
     insta_downloader = InstagramDownloader(timeout=90.0)
     logger.info("Instagram downloader enabled (yt-dlp, public posts and Reels only)")
 
+    # YouTube audio downloader (always available — uses yt-dlp, no credentials needed for public videos)
+    yt_downloader = YTDownloader(timeout=120.0)
+    logger.info("YouTube audio downloader enabled (yt-dlp, public videos only)")
+
     dp = Dispatcher()
 
     # Dependency injection via workflow_data — every handler receives these as kwargs
@@ -210,6 +220,7 @@ async def amain() -> None:
         sheets_client=sheets_client,
         meters_client=meters_client,
         insta_downloader=insta_downloader,
+        yt_downloader=yt_downloader,
     )
     # `claude` is only defined when ANTHROPIC_API_KEY is set
     if "claude" in dir() or "claude" in vars():

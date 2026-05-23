@@ -21,6 +21,7 @@ from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
 from claudebots.core.meters_client import MetersClient, looks_like_meter_message, extract_meter_readings
 from claudebots.services.insta_downloader import InstagramDownloader, detect_url as _detect_insta_url
+from claudebots.services.yt_downloader import YTDownloader, detect_url as _detect_yt_url, AudioFile as _YTAudioFile
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +425,7 @@ async def _on_private_message(
     calendar_client: "GoogleCalendarClient | None" = None,
     meters_client: "MetersClient | None" = None,
     insta_downloader: "InstagramDownloader | None" = None,
+    yt_downloader: "YTDownloader | None" = None,
 ) -> None:
     """Handle direct messages to the business bot in private chat or supergroup with topics."""
     # Skip if it's a business connection message (handled by other handler)
@@ -450,6 +452,7 @@ async def _on_private_message(
         calendar_client=calendar_client,
         meters_client=meters_client,
         insta_downloader=insta_downloader,
+        yt_downloader=yt_downloader,
     )
 
 
@@ -830,6 +833,7 @@ async def handle_private_message(
     calendar_client: GoogleCalendarClient | None = None,
     meters_client: "MetersClient | None" = None,
     insta_downloader: "InstagramDownloader | None" = None,
+    yt_downloader: "YTDownloader | None" = None,
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
 ) -> None:
@@ -1099,6 +1103,163 @@ async def handle_private_message(
                         pass
             finally:
                 insta_downloader.cleanup(_media_files)
+            return
+
+    # ── YouTube audio extraction ──────────────────────────────────────────────
+    if is_owner_mode and yt_downloader is not None:
+        _yt_url = _detect_yt_url(text)
+        if _yt_url:
+            # Determine target chat: same logic as Instagram
+            _yt_send_chat = (
+                message.chat.id if chat_type == "supergroup" else _admin_supergroup_id
+            )
+            _is_yt_supergroup = (
+                (_yt_send_chat == message.chat.id and chat_type == "supergroup")
+                or (_yt_send_chat == _admin_supergroup_id)
+                or (_yt_send_chat == panel_chat_id)
+            )
+            _yt_bot = panel_bot if (_yt_send_chat == panel_chat_id and panel_bot is not None) else bot
+            _yt_thread_id: int | None = message.message_thread_id
+
+            if _yt_send_chat is not None and _is_yt_supergroup:
+                _yt_key = f"🎵 YouTube:{_yt_send_chat}"
+                _yt_thread_id = _admin_topics.get(_yt_key)
+                if _yt_thread_id is None:
+                    try:
+                        _yt_t = await _yt_bot.create_forum_topic(
+                            chat_id=_yt_send_chat, name="🎵 YouTube"
+                        )
+                        _yt_thread_id = _yt_t.message_thread_id
+                        _admin_topics[_yt_key] = _yt_thread_id
+                        _persist_business_state()
+                        logger.info("Created YouTube topic chat=%d id=%d",
+                                    _yt_send_chat, _yt_thread_id)
+                    except Exception as _te:
+                        logger.warning("create YouTube topic failed: %s", _te)
+                        _yt_send_chat = message.chat.id
+                        _yt_thread_id = message.message_thread_id
+            else:
+                if _yt_send_chat is None:
+                    _yt_send_chat = message.chat.id
+                _yt_thread_id = None
+
+            # Send "downloading…" placeholder
+            _yt_wait_msg = None
+            try:
+                await _yt_bot.send_chat_action(
+                    chat_id=_yt_send_chat, action="upload_document",
+                    message_thread_id=_yt_thread_id,
+                )
+            except Exception:
+                pass
+            try:
+                _yt_wait_msg = await _yt_bot.send_message(
+                    chat_id=_yt_send_chat,
+                    text="⏬ Скачиваю аудио…",
+                    message_thread_id=_yt_thread_id,
+                    parse_mode=None,
+                )
+            except Exception as _we:
+                logger.warning("Failed to send YT placeholder to topic %s: %s. Retrying.", _yt_thread_id, _we)
+                if _is_yt_supergroup and _yt_send_chat is not None:
+                    _yt_key2 = f"🎵 YouTube:{_yt_send_chat}"
+                    _admin_topics.pop(_yt_key2, None)
+                    try:
+                        _yt_t2 = await _yt_bot.create_forum_topic(
+                            chat_id=_yt_send_chat, name="🎵 YouTube"
+                        )
+                        _yt_thread_id = _yt_t2.message_thread_id
+                        _admin_topics[_yt_key2] = _yt_thread_id
+                        _persist_business_state()
+                        _yt_wait_msg = await _yt_bot.send_message(
+                            chat_id=_yt_send_chat,
+                            text="⏬ Скачиваю аудио…",
+                            message_thread_id=_yt_thread_id,
+                            parse_mode=None,
+                        )
+                    except Exception as _retry_err:
+                        logger.error("Failed to recover YouTube topic: %s", _retry_err)
+                        _yt_send_chat = message.chat.id
+                        _yt_thread_id = message.message_thread_id
+
+            _yt_audio: _YTAudioFile | None = None
+            try:
+                _yt_audio = await yt_downloader.download_audio(_yt_url)
+
+                if _yt_audio is None:
+                    raise RuntimeError("yt_downloader вернул None — возможно видео недоступно")
+
+                # Delete placeholder
+                if _yt_wait_msg is not None:
+                    try:
+                        await _yt_bot.delete_message(
+                            chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id
+                        )
+                    except Exception:
+                        pass
+
+                _yt_caption = _yt_audio.title[:200] if _yt_audio.title else None
+
+                if _yt_audio.send_as_audio:
+                    await _yt_bot.send_audio(
+                        chat_id=_yt_send_chat,
+                        audio=_yt_audio.path.open("rb"),
+                        title=_yt_audio.title or None,
+                        duration=_yt_audio.duration_s or None,
+                        caption=_yt_caption,
+                        message_thread_id=_yt_thread_id,
+                        parse_mode=None,
+                    )
+                else:
+                    await _yt_bot.send_document(
+                        chat_id=_yt_send_chat,
+                        document=_yt_audio.path.open("rb"),
+                        caption=_yt_caption,
+                        message_thread_id=_yt_thread_id,
+                        parse_mode=None,
+                    )
+
+                # Confirm to private chat if we routed to supergroup
+                if chat_type == "private" and _yt_send_chat != message.chat.id:
+                    try:
+                        await bot.send_message(
+                            chat_id=message.chat.id,
+                            text="✅ Аудио скачано и отправлено в топик 🎵 YouTube",
+                            parse_mode=None,
+                        )
+                    except Exception as _pe:
+                        logger.debug("Failed to send YT private confirmation: %s", _pe)
+
+            except Exception as _e:
+                logger.warning("YouTube send failed: %s", _e)
+                try:
+                    if _yt_wait_msg is not None:
+                        await _yt_bot.edit_message_text(
+                            chat_id=_yt_send_chat,
+                            message_id=_yt_wait_msg.message_id,
+                            text=f"⚠️ Не удалось скачать аудио: {_e}",
+                            parse_mode=None,
+                        )
+                    else:
+                        await _yt_bot.send_message(
+                            chat_id=_yt_send_chat,
+                            text=f"⚠️ Не удалось скачать аудио: {_e}",
+                            message_thread_id=_yt_thread_id,
+                            parse_mode=None,
+                        )
+                except Exception:
+                    pass
+                if chat_type == "private" and _yt_send_chat != message.chat.id:
+                    try:
+                        await bot.send_message(
+                            chat_id=message.chat.id,
+                            text=f"⚠️ Не удалось скачать аудио: {_e}",
+                            parse_mode=None,
+                        )
+                    except Exception:
+                        pass
+            finally:
+                yt_downloader.cleanup(_yt_audio)
             return
 
     # For supergroup: classify every owner message and ensure it lands in the right
