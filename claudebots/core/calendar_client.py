@@ -53,7 +53,7 @@ class GoogleCalendarClient:
             return None
 
         try:
-            scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+            scopes = ["https://www.googleapis.com/auth/calendar.events"]
             creds = service_account.Credentials.from_service_account_file(
                 str(self.service_account_file), scopes=scopes
             )
@@ -198,3 +198,60 @@ class GoogleCalendarClient:
             if self._cache is not None:
                 return self._cache
             return "Не удалось получить расписание."
+
+    async def create_event(
+        self,
+        summary: str,
+        start_iso: str,
+        end_iso: str,
+        description: str = "",
+        location: str = "",
+    ) -> str | None:
+        """Create a calendar event. Returns the event HTML link on success, None on failure.
+
+        Args:
+            summary: Event title.
+            start_iso: Start datetime in ISO 8601 with timezone, e.g. "2026-05-24T15:00:00+03:00".
+            end_iso: End datetime in ISO 8601 with timezone.
+            description: Optional event description.
+            location: Optional location string.
+        """
+        if not self.service_account_file or not self.service_account_file.exists():
+            logger.warning("Calendar create_event: service account not configured.")
+            return None
+
+        loop = asyncio.get_running_loop()
+
+        def _create() -> str | None:
+            svc = self._get_service()
+            if not svc:
+                return None
+            event_body = {
+                "summary": summary,
+                "description": description,
+                "location": location,
+                "start": {"dateTime": start_iso},
+                "end": {"dateTime": end_iso},
+            }
+            try:
+                created = (
+                    svc.events()
+                    .insert(calendarId=self.calendar_id, body=event_body)
+                    .execute()
+                )
+                link = created.get("htmlLink")
+                logger.info("Calendar event created: %s — %s", summary, link)
+                return link
+            except Exception as e:
+                logger.warning("Calendar create_event failed: %s", e)
+                return None
+
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _create),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Calendar create_event timed out.")
+            return None
+

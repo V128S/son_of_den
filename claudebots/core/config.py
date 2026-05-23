@@ -66,3 +66,12 @@ class Settings(BaseSettings):
     feed_min_score: int = 7
     # Minimum hours between two auto-triggered rounds (set low for testing).
     feed_min_interval_hours: float = 4.0
+    # Obsidian vault integration — local path to the vault folder.
+    # Leave empty to disable Obsidian logging.
+    obsidian_vault_path: str = ""
+
+    # Google Sheets integration — personal price sheet where transferred rows land.
+    sheets_personal_id: str = "1AKD5vyhUgzxlA04p7W7c3ZrMscHEbeflsmtp6evB48w"
+    # Markup percentage applied to prices when transferring from contact's sheet to yours.
+    sheets_markup_percent: float = 20.0
+

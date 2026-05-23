@@ -14,6 +14,8 @@ from claudebots.core.conversation import ConversationStore
 from claudebots.core.gemini_client import GeminiClient
 from claudebots.core.groq_client import GroqClient
 from claudebots.core.calendar_client import GoogleCalendarClient
+from claudebots.core.obsidian_client import ObsidianClient
+from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
 from claudebots.routers.admin import PersonaHolder, admin_router
@@ -147,6 +149,33 @@ async def amain() -> None:
         timezone_str=settings.user_timezone,
     )
 
+    # Obsidian vault client (disabled when OBSIDIAN_VAULT_PATH is empty)
+    obsidian_client: ObsidianClient | None = None
+    if settings.obsidian_vault_path:
+        obsidian_client = ObsidianClient(
+            vault_path=settings.obsidian_vault_path,
+            timezone_str=settings.user_timezone,
+        )
+        logger.info("Obsidian client enabled (vault=%s)", settings.obsidian_vault_path)
+    else:
+        logger.info("Obsidian client disabled (OBSIDIAN_VAULT_PATH not set)")
+
+    # Google Sheets client (enabled when service account is configured)
+    sheets_client: GoogleSheetsClient | None = None
+    if settings.google_service_account_file:
+        sheets_client = GoogleSheetsClient(
+            service_account_file=settings.google_service_account_file,
+            personal_sheet_id=settings.sheets_personal_id,
+            markup_percent=settings.sheets_markup_percent,
+        )
+        logger.info(
+            "Google Sheets client enabled (personal_id=%s, markup=%.0f%%)",
+            settings.sheets_personal_id[:8] + "..." if settings.sheets_personal_id else "",
+            settings.sheets_markup_percent,
+        )
+    else:
+        logger.info("Google Sheets client disabled (GOOGLE_SERVICE_ACCOUNT_FILE not set)")
+
     dp = Dispatcher()
 
     # Dependency injection via workflow_data — every handler receives these as kwargs
@@ -159,6 +188,8 @@ async def amain() -> None:
         bots=bots,
         alerts=alerts,
         calendar_client=calendar_client,
+        obsidian_client=obsidian_client,
+        sheets_client=sheets_client,
     )
     # `claude` is only defined when ANTHROPIC_API_KEY is set
     if "claude" in dir() or "claude" in vars():

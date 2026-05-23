@@ -63,7 +63,7 @@ def test_get_service_initialization(calendar_client, mock_credentials, mock_buil
     assert service == mock_build
     mock_credentials.assert_called_once_with(
         str(calendar_client.service_account_file),
-        scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+        scopes=["https://www.googleapis.com/auth/calendar.events"],
     )
 
 

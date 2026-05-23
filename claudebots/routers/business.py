@@ -17,6 +17,8 @@ from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.personas import PersonaRegistry
 from claudebots.core import state as _state
 from pathlib import Path
+from claudebots.core.obsidian_client import ObsidianClient
+from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +294,9 @@ async def _on_business_message(
     alerts: AlertSender,
     settings,
     bots: dict[str, Bot],
-    calendar_client: GoogleCalendarClient | None = None,
+    calendar_client: "GoogleCalendarClient | None" = None,
+    obsidian_client: "ObsidianClient | None" = None,
+    sheets_client: "GoogleSheetsClient | None" = None,
 ) -> None:
     # Use moderator bot for panel group (it has access there)
     panel_bot = bots.get("moderator")
@@ -308,6 +312,8 @@ async def _on_business_message(
         panel_chat_id=settings.panel_chat_id,
         panel_bot=panel_bot,
         calendar_client=calendar_client,
+        obsidian_client=obsidian_client,
+        sheets_client=sheets_client,
     )
 
 
@@ -419,6 +425,70 @@ async def _on_private_message(
     )
 
 
+
+async def _extract_calendar_event(
+    text: str,
+    ai_registry: "AIRegistry",
+    tz: "ZoneInfo",
+) -> dict | None:
+    """Use AI to extract a calendar event from contact message text.
+
+    Returns a dict with keys: summary, start_iso, end_iso, description, location
+    or None if no schedulable event was detected.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    import json as _json
+
+    now_str = datetime.now(tz).strftime("%Y-%m-%dT%H:%M:%S%z")
+    tz_name = str(tz)
+
+    prompt = (
+        f"Текущее время: {now_str} ({tz_name})\n"
+        f"Сообщение от контакта: {text[:600]}\n\n"
+        "Если в сообщении упоминается конкретная дата/время встречи/созвона/звонка — "
+        "верни JSON с полями: summary (название), start_iso (ISO 8601 со временем зоны), "
+        "end_iso (start + 1 час по умолчанию), description (необязательно), location (необязательно).\n"
+        "Если конкретной даты нет — верни только слово: нет"
+    )
+    try:
+        client = ai_registry.get_client("openrouter_gemini")
+        raw = await client.complete(
+            system="Ты извлекаешь данные о встречах из сообщений. Отвечай строго JSON или словом нет.",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+        )
+        raw = raw.strip()
+        if raw.lower().startswith("нет") or raw.lower() == "no":
+            return None
+        # Strip markdown code fences if present
+        raw = raw.strip("` \n")
+        if raw.startswith("json"):
+            raw = raw[4:]
+        data = _json.loads(raw)
+        # Validate required fields
+        if not data.get("summary") or not data.get("start_iso"):
+            return None
+        # Default end = start + 1 hour if missing
+        if not data.get("end_iso"):
+            from datetime import datetime as _dt
+            try:
+                start = _dt.fromisoformat(data["start_iso"])
+                data["end_iso"] = (start + timedelta(hours=1)).isoformat()
+            except Exception:
+                data["end_iso"] = data["start_iso"]
+        return {
+            "summary": data.get("summary", "Встреча"),
+            "start_iso": data["start_iso"],
+            "end_iso": data["end_iso"],
+            "description": data.get("description", ""),
+            "location": data.get("location", ""),
+        }
+    except Exception as e:
+        logger.debug("_extract_calendar_event: %s", e)
+        return None
+
+
 async def handle_business_message(
     *,
     message: Message,
@@ -431,6 +501,8 @@ async def handle_business_message(
     panel_chat_id: int | None = None,
     panel_bot: Bot | None = None,
     calendar_client: GoogleCalendarClient | None = None,
+    obsidian_client: ObsidianClient | None = None,
+    sheets_client: GoogleSheetsClient | None = None,
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
 ) -> None:
@@ -462,6 +534,18 @@ async def handle_business_message(
 
         # Track daily contact activity for digest
         _contact_today[user.id] = _contact_today.get(user.id, 0) + 1
+
+        # Log to Obsidian vault
+        if obsidian_client is not None:
+            try:
+                obsidian_client.log_message(
+                    contact_name=user_name,
+                    contact_id=user.id,
+                    message_text=text,
+                    role="contact",
+                )
+            except Exception as _obs_err:
+                logger.debug("Obsidian log failed: %s", _obs_err)
 
         # Get or create topic for this contact in admin's chat with bot
         topic_id = await _get_or_create_contact_topic(bot, admin_user_id, user.id, user_name)
@@ -551,6 +635,76 @@ async def handle_business_message(
 
     conv.add(key, "assistant", response)
 
+    # ── Sheets: detect price-sheet URL in contact's message ──────────────
+    if sheets_client is not None and message.from_user:
+        _sheet_id = extract_sheet_id(text)
+        if _sheet_id:
+            user_name_s = (message.from_user.full_name or message.from_user.username
+                           or f"ID:{message.from_user.id}")
+            try:
+                _rows_r, _rows_w = await sheets_client.transfer_prices(_sheet_id)
+                _sheets_reply = (
+                    f"✅ Перенёс {_rows_r} позиций из прайса в личную таблицу "
+                    f"(с наценкой {sheets_client.markup_percent:.0f}%)."
+                    if _rows_r else "⚠️ Не удалось прочитать таблицу — проверь доступ."
+                )
+                try:
+                    await bot.send_message(
+                        admin_user_id,
+                        f"📊 Прайс от {user_name_s}: {_sheets_reply}",
+                        message_thread_id=_contact_topics.get(message.from_user.id),
+                    )
+                except Exception as _e:
+                    logger.debug("Sheets admin notify failed: %s", _e)
+                if obsidian_client is not None:
+                    _src_url = f"https://docs.google.com/spreadsheets/d/{_sheet_id}"
+                    obsidian_client.log_sheets_transfer(
+                        contact_name=user_name_s,
+                        rows_read=_rows_r,
+                        rows_written=_rows_w,
+                        source_url=_src_url,
+                    )
+            except Exception as _e:
+                logger.warning("Sheets transfer failed: %s", _e)
+
+    # ── Calendar: detect meeting time in contact message ─────────────────
+    if calendar_client is not None and message.from_user and text.strip():
+        import re as _re
+        _time_hints = _re.search(
+            r"\b(встреч|zoom|колл|call|созвон|перезвон|завтра|в \d{1,2}[:.:]|\d{1,2}:\d{2}|"
+            r"понедельник|вторник|среда|четверг|пятниц|суббот|воскресень|"
+            r"январ|феврал|март|апрел|май|июн|июл|август|сентябр|октябр|ноябр|декабр)\b",
+            text, _re.IGNORECASE,
+        )
+        if _time_hints:
+            try:
+                _cal_info = await _extract_calendar_event(text, ai_registry, calendar_client.tz)
+                if _cal_info:
+                    _ev_link = await calendar_client.create_event(**_cal_info)
+                    _ev_title = _cal_info.get("summary", "Встреча")
+                    _user_name_c = (message.from_user.full_name or message.from_user.username
+                                    or f"ID:{message.from_user.id}")
+                    _note = (
+                        f"📅 Событие «{_ev_title}» создано в календаре."
+                        + (f" {_ev_link}" if _ev_link else "")
+                    )
+                    try:
+                        await bot.send_message(
+                            admin_user_id,
+                            f"🗓 {_user_name_c}: {_note}",
+                            message_thread_id=_contact_topics.get(message.from_user.id),
+                        )
+                    except Exception as _e:
+                        logger.debug("Calendar admin notify failed: %s", _e)
+                    if obsidian_client is not None:
+                        obsidian_client.log_calendar_event(
+                            contact_name=_user_name_c,
+                            event_summary=_ev_title,
+                            event_link=_ev_link,
+                        )
+            except Exception as _e:
+                logger.warning("Calendar event extraction/creation failed: %s", _e)
+
     # Store assistant response in contact data
     if message.from_user and message.from_user.id in _contact_data:
         _contact_data[message.from_user.id]["messages"].append({
@@ -559,6 +713,19 @@ async def handle_business_message(
             "time": datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%H:%M"),
         })
         _contact_data[message.from_user.id]["messages"] = _contact_data[message.from_user.id]["messages"][-20:]
+        # Log bot reply to Obsidian
+        if obsidian_client is not None:
+            user_name_r = (message.from_user.full_name or message.from_user.username
+                           or f"ID:{message.from_user.id}")
+            try:
+                obsidian_client.log_message(
+                    contact_name=user_name_r,
+                    contact_id=message.from_user.id,
+                    message_text=response,
+                    role="assistant",
+                )
+            except Exception as _obs_err:
+                logger.debug("Obsidian bot reply log failed: %s", _obs_err)
 
     # Send assistant response to admin in private chat (with topics)
     if admin_user_id and message.from_user:
