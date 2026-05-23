@@ -649,7 +649,7 @@ def start_revival_scheduler(
 # Panel message handler
 # ---------------------------------------------------------------------------
 
-@panel_router.message(F.text & F.chat.type.in_({"supergroup", "group"}))
+@panel_router.message((F.text | F.caption) & F.chat.type.in_({"supergroup", "group"}))
 async def _on_panel_message(
     message: Message,
     bots: dict[str, Bot],
@@ -695,7 +695,7 @@ async def _on_panel_message(
             thread_id = await _analyze_topic_and_get_thread(
                 bot=moderator_bot,
                 chat_id=settings.panel_chat_id,
-                question=message.text or "",
+                question=message.text or message.caption or "",
                 ai_registry=ai_registry,
             )
         # Fallback: if analysis/creation failed, use the incoming thread
@@ -713,7 +713,7 @@ async def _on_panel_message(
             panel_chat_id=settings.panel_chat_id,
             thread_id=thread_id,
         )
-        task = asyncio.create_task(runner.run_round(message.text or ""))
+        task = asyncio.create_task(runner.run_round(message.text or message.caption or ""))
         task.add_done_callback(
             lambda t: logger.warning("Panel round raised: %s", t.exception())
             if not t.cancelled() and t.exception() else None
