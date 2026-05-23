@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat&logo=telegram)](https://core.telegram.org/bots)
-[![Tests](https://img.shields.io/badge/Tests-68%20passing-brightgreen?style=flat)](#testing)
+[![Tests](https://img.shields.io/badge/Tests-124%20passing-brightgreen?style=flat)](#testing)
 [![License](https://img.shields.io/badge/License-Private-red?style=flat)](#)
 
 </div>
@@ -18,6 +18,10 @@
 **Business Assistant** — auto-responds to Telegram messages on behalf of the owner. Understands context, reads Google Calendar in real time, and handles any question politely while the owner is busy. Incoming messages are mirrored to the admin in a dedicated forum topic per contact.
 
 **Personal Assistant** — the owner can write directly to the business bot in any forum topic. Messages are automatically classified into thematic categories (Tasks, Ideas, Planning, Clients, etc.) and routed to the matching topic — or a new one is created and named accordingly.
+
+**Instagram Downloader** — send any public Instagram post/Reel/carousel URL and the bot instantly downloads photos or video and delivers them to a dedicated `📸 Instagram` forum topic. Works from both DM and supergroup.
+
+**YouTube Audio** — send any `https://youtu.be/` or `https://youtube.com/watch?v=` link and the bot extracts the best-quality audio track and delivers it to a `🎵 YouTube` forum topic as a playable audio message (or document if >50 MB).
 
 **Panel Discussion** — 5 bots that debate any topic: Analyst, Skeptic, Creative, Pragmatist, and a Moderator who synthesises everything into a clean takeaway. Questions are automatically categorised and routed to thematic forum threads.
 
@@ -56,6 +60,10 @@ One Python process · One asyncio loop · 6 Telegram bots
 - `PersonaRegistry` — hot-reloadable YAML persona definitions
 - `AlertSender` — throttled admin notifications (4096-char truncation)
 - `AIRegistry` — multi-model routing (Claude · Groq · OpenRouter · Gemini)
+
+**Services:**
+- `InstagramDownloader` — yt-dlp powered downloader for public posts/Reels, with ffmpeg H.264 re-encode and carousel support
+- `YTDownloader` — yt-dlp powered audio extractor for YouTube videos (no re-encode, native quality)
 
 ---
 
@@ -163,6 +171,36 @@ You can **write directly inside a contact's topic** — the bot recognises you a
 
 ---
 
+## 📸 Instagram Downloader
+
+Send any public Instagram URL to the bot — it will download the media and deliver it to a dedicated forum topic:
+
+- **Posts & carousels** — photos and videos sent as media group
+- **Reels** — video re-encoded to H.264/AAC with `faststart` for in-app playback
+- Files >50 MB are sent as documents
+- Works from both a private DM and directly in the supergroup
+- Topic `📸 Instagram` is created automatically and reused across sessions
+- Recovers automatically if the topic is manually deleted
+
+```
+https://www.instagram.com/p/ABC123/
+https://www.instagram.com/reel/ABC123/
+```
+
+---
+
+## 🎵 YouTube Audio
+
+Send any YouTube video link — the bot extracts the best-quality audio and delivers it to `🎵 YouTube` topic:
+
+- Downloads in native format (m4a/opus) — no re-encoding, quality preserved
+- Files ≤ 50 MB → `send_audio` (playable in Telegram); larger → `send_document`
+- Sends a private confirmation when the link came from DM and audio went to the supergroup topic
+- Supported: `https://youtu.be/ID` and `https://youtube.com/watch?v=ID`
+- Not supported: Shorts, playlists, channel pages, private videos
+
+---
+
 ## 🗂 Owner Topic Categorisation
 
 When the owner writes a message to the business bot (in any forum topic or general chat), the bot:
@@ -208,7 +246,7 @@ The business assistant reads your calendar in real time to answer questions like
 ## 🧪 Testing
 
 ```bash
-uv run pytest                  # all 68 tests
+uv run pytest                  # all 124 tests
 uv run pytest tests/unit       # unit tests only (fast)
 uv run pytest tests/integration
 ```
@@ -245,9 +283,12 @@ claudebots/
 │   ├── gemini_client.py     # Google Gemini wrapper
 │   └── openrouter_client.py # OpenRouter wrapper
 ├── routers/
-│   ├── business.py          # Business + personal message handler
+│   ├── business.py          # Business + personal + Instagram/YouTube handler
 │   ├── panel.py             # Panel round orchestrator + forum topics
 │   └── admin.py             # Admin commands
+├── services/
+│   ├── insta_downloader.py  # Instagram media downloader (yt-dlp + ffmpeg)
+│   └── yt_downloader.py     # YouTube audio extractor (yt-dlp)
 ├── bots.py                  # Bot instances factory
 └── __main__.py              # Entrypoint & dependency injection
 ```

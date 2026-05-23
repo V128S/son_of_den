@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (68 tests, e2e excluded by default)
+# Run all tests (124 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -63,13 +63,22 @@ Background tasks started at boot:
 | `calendar_client.py` | Reads Google Calendar via Service Account. 60 s in-memory cache. Optional — bot works without it. |
 | `feed_monitor.py` | Polls `rsshub.app/telegram/channel/<slug>` (Atom); falls back to `t.me/s/<slug>` scraping on 403. Scores entries with the cheapest available AI; fires `PanelRoundRunner` when score ≥ `FEED_MIN_SCORE`. |
 
+### Services (`claudebots/services/`)
+
+| Module | Purpose |
+|---|---|
+| `insta_downloader.py` | `InstagramDownloader` — downloads public posts/Reels via yt-dlp. `detect_url(text)` extracts the first Instagram URL. Returns `list[MediaFile]` (photo/video/document). Handles carousels. Re-encodes video to H.264/AAC+faststart via ffmpeg for Telegram playback. |
+| `yt_downloader.py` | `YTDownloader` — downloads the best-quality audio from YouTube videos via yt-dlp. `detect_url(text)` matches `https://youtu.be/` and `https://youtube.com/watch?v=` (requires protocol; ignores Shorts, playlists, channels). Returns `AudioFile` with `send_as_audio` property (>50 MB → document). Cleans up tmpdir on all paths including errors. |
+
 ### Routers (`claudebots/routers/`)
 
 **`business.py`** handles two distinct message types on the same bot:
 - **Business messages** (`@business_router.business_message`) — auto-replies on behalf of the owner using streaming. Mirrors incoming and outgoing messages to the admin via per-contact forum topics.
 - **Private/supergroup messages** (`_on_private_message`) — owner-mode vs. regular-user mode. Owner gets a non-streaming `complete()` call; non-owner gets the streaming placeholder flow. Forwarded channel posts trigger a panel round via `_on_forward_to_panel`.
+- **Instagram downloader** — detects Instagram URLs in owner messages, downloads media via `InstagramDownloader`, sends to a persistent `📸 Instagram` forum topic (key `"📸 Instagram:{chat_id}"`). Works from DM and supergroup. Recovers automatically if topic is deleted.
+- **YouTube audio** — detects YouTube URLs in owner messages, downloads best audio via `YTDownloader`, sends as audio (or document if >50 MB) to a persistent `🎵 YouTube` forum topic (key `"🎵 YouTube:{chat_id}"`). Uses `FSInputFile` for aiogram 3.x compatibility.
 - **Owner topic categorisation** — when the admin writes in a forum topic (not a contact topic), the message is classified into one of 9 fixed categories and routed to the matching topic (or the topic is renamed). Uses `openrouter_gemini` for classification.
-- Module-level dicts (`_contact_topics`, `_admin_topics`, etc.) are the in-memory state; `_persist_business_state()` flushes them to `bot_state.json` via `state.update()`.
+- Module-level dicts (`_contact_topics`, `_admin_topics`, `_admin_supergroup_id`, etc.) are the in-memory state; `_persist_business_state()` flushes them to `bot_state.json` via `state.update()`.
 
 **`panel.py`** orchestrates the 5-bot discussion:
 - `PanelRoundRunner.run_round(topic)` — sequential round: each speaker responds in turn, then the moderator synthesises. Uses `_processing_lock` to ensure at most one active round at a time.
@@ -91,7 +100,8 @@ Each persona declares its own `provider`. `AIRegistry.get_client(provider)` retu
 `bot_state.json` stores these keys:
 - `panel_topics` — `{thread_id: topic_name}` for the panel forum
 - `contact_topics` — `{user_id: thread_id}` for business contacts
-- `admin_topics` — `{category_name: thread_id}` for owner categories
+- `admin_topics` — `{category_name: thread_id}` for owner categories (includes `"📸 Instagram:{chat_id}"` and `"🎵 YouTube:{chat_id}"` keys)
+- `admin_supergroup_id` — remembered supergroup chat_id for routing DM-sent media to forum topics
 - `feed_seen` — set of already-processed RSS entry IDs
 - `feed_last_round_ts` / `feed_rounds_today` / `feed_date_today` — feed rate-limiting
 
