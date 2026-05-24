@@ -34,6 +34,17 @@ _TG_WEB_BASE = "https://t.me/s/{channel}"
 _FEED_SEEN_MAX = 500
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
+# Pre-compile hot regexes so we don't re-parse them on every call.  Python's
+# ``re`` module caches a small number of patterns internally, but explicit
+# compilation makes the cost obvious and removes a small lookup overhead.
+_RE_HTML_TAG = re.compile(r"<[^>]+>")
+_RE_TME_POST = re.compile(
+    r'data-post="([^"]+)".*?'
+    r'datetime="([^"]+)".*?'
+    r'class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+    re.DOTALL,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,7 +52,7 @@ _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
 def _strip_html(text: str) -> str:
     """Remove HTML tags and unescape entities; collapse whitespace."""
-    text = re.sub(r"<[^>]+>", " ", text)
+    text = _RE_HTML_TAG.sub(" ", text)
     text = _html.unescape(text)
     return " ".join(text.split())
 
@@ -150,13 +161,7 @@ def _parse_rss(xml_text: str) -> list[tuple[str, str, str, float]]:
 def _parse_tme(html: str, channel: str) -> list[tuple[str, str, str, float]]:
     """Parse t.me/s/<channel> HTML; return list of (url, title, text, timestamp)."""
     entries: list[tuple[str, str, str, float]] = []
-    for m in re.finditer(
-        r'data-post="([^"]+)".*?'
-        r'datetime="([^"]+)".*?'
-        r'class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
-        html,
-        re.DOTALL,
-    ):
+    for m in _RE_TME_POST.finditer(html):
         slug, dt_str, raw = m.group(1), m.group(2), m.group(3)
         url = f"https://t.me/{slug}"
         text = _strip_html(raw)
@@ -238,15 +243,43 @@ class FeedMonitor:
         best_score = -1
 
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            for channel in self._channels:
-                for url, title, text, pub_ts in await self._fetch_entries(client, channel):
-                    if url in seen_set:
+            # Fetch all channels concurrently — HTTP I/O dominates wall time
+            # here, so doing N sequential GETs is wasteful.
+            fetched = await asyncio.gather(
+                *(self._fetch_entries(client, ch) for ch in self._channels),
+                return_exceptions=True,
+            )
+
+            # Flatten + dedup + freshness filter before invoking the
+            # scoring LLM so we don't pay for entries we'd discard anyway.
+            candidates: list[tuple[str, str, str, float]] = []
+            seen_in_batch: set[str] = set()
+            for result in fetched:
+                if isinstance(result, BaseException):
+                    logger.debug("Feed fetch failed: %s", result)
+                    continue
+                for url, title, text, pub_ts in result:
+                    if not url or url in seen_set or url in seen_in_batch:
                         continue
                     if now - pub_ts > 86_400:  # skip entries older than 24 h
                         continue
-                    score = await self._score_entry(title, text)
+                    seen_in_batch.add(url)
+                    candidates.append((url, title, text, pub_ts))
+
+            if candidates:
+                # Score everything concurrently — these are independent LLM
+                # calls so ``gather`` cuts wall time roughly N×.
+                scores = await asyncio.gather(
+                    *(self._score_entry(t, b) for _, t, b, _ in candidates),
+                    return_exceptions=True,
+                )
+                for (url, title, text, _), score in zip(candidates, scores):
+                    if isinstance(score, BaseException):
+                        continue
                     if score > best_score:
-                        best_score, best_url, best_title, best_text = score, url, title, text
+                        best_score, best_url, best_title, best_text = (
+                            score, url, title, text,
+                        )
 
         if best_url is None or best_score < self._min_score:
             logger.debug("Feed monitor: no worthy entry found (best_score=%d)", best_score)

@@ -1,27 +1,37 @@
 import asyncio
+import json as _json
 import logging
+import re
 import time
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
 from aiogram.types import Message
 
+from claudebots.core import state as _state
 from claudebots.core.ai_registry import AIRegistry
 from claudebots.core.alerts import AlertSender
-from claudebots.core.conversation import ConversationStore
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from claudebots.core.calendar_client import GoogleCalendarClient
-from claudebots.core.personas import PersonaRegistry
-from claudebots.core import state as _state
-from pathlib import Path
-from claudebots.core.obsidian_client import ObsidianClient
-from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
+from claudebots.core.conversation import ConversationStore
 from claudebots.core.meters_client import MetersClient, looks_like_meter_message, extract_meter_readings
+from claudebots.core.obsidian_client import ObsidianClient
+from claudebots.core.personas import PersonaRegistry
+from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
 from claudebots.services.insta_downloader import InstagramDownloader, detect_url as _detect_insta_url
 from claudebots.services.yt_downloader import YTDownloader, detect_url as _detect_yt_url, AudioFile as _YTAudioFile
+
+# Pre-compiled regex used inside the per-message hot path to detect
+# meeting-time hints.  Compiling once at import time avoids paying the
+# (cached but non-zero) lookup cost on every business message we handle.
+_RE_CALENDAR_HINT = re.compile(
+    r"\b(встреч|zoom|колл|call|созвон|перезвон|завтра|в \d{1,2}[:.:]|\d{1,2}:\d{2}|"
+    r"понедельник|вторник|среда|четверг|пятниц|суббот|воскресень|"
+    r"январ|феврал|март|апрел|май|июн|июл|август|сентябр|октябр|ноябр|декабр)\b",
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -467,10 +477,6 @@ async def _extract_calendar_event(
     Returns a dict with keys: summary, start_iso, end_iso, description, location
     or None if no schedulable event was detected.
     """
-    from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
-    import json as _json
-
     now_str = datetime.now(tz).strftime("%Y-%m-%dT%H:%M:%S%z")
     tz_name = str(tz)
 
@@ -502,9 +508,8 @@ async def _extract_calendar_event(
             return None
         # Default end = start + 1 hour if missing
         if not data.get("end_iso"):
-            from datetime import datetime as _dt
             try:
-                start = _dt.fromisoformat(data["start_iso"])
+                start = datetime.fromisoformat(data["start_iso"])
                 data["end_iso"] = (start + timedelta(hours=1)).isoformat()
             except Exception:
                 data["end_iso"] = data["start_iso"]
@@ -700,13 +705,7 @@ async def handle_business_message(
 
     # ── Calendar: detect meeting time in contact message ─────────────────
     if calendar_client is not None and message.from_user and text.strip():
-        import re as _re
-        _time_hints = _re.search(
-            r"\b(встреч|zoom|колл|call|созвон|перезвон|завтра|в \d{1,2}[:.:]|\d{1,2}:\d{2}|"
-            r"понедельник|вторник|среда|четверг|пятниц|суббот|воскресень|"
-            r"январ|феврал|март|апрел|май|июн|июл|август|сентябр|октябр|ноябр|декабр)\b",
-            text, _re.IGNORECASE,
-        )
+        _time_hints = _RE_CALENDAR_HINT.search(text)
         if _time_hints:
             try:
                 _cal_info = await _extract_calendar_event(text, ai_registry, calendar_client.tz)
@@ -781,18 +780,36 @@ async def handle_business_message(
 
 
 def _build_recent_contacts_summary(max_contacts: int = 5, max_msgs: int = 3) -> str:
-    """Build a brief summary of recent contacts for the owner system prompt."""
+    """Build a brief summary of recent contacts for the owner system prompt.
+
+    Implementation notes:
+    - ``list(dict.items())[-N:]`` copies every entry just to keep the last
+      *N*; iterating the dict's view and slicing afterwards via
+      ``itertools.islice`` over the reversed view (or just slicing the
+      ``items`` view length) costs the same big-O but allocates less.  We
+      keep the current ordering ("oldest of the recent N first") but avoid
+      copying the full items list for the dict when it is small.
+    - Repeated ``str += ...`` reallocates the underlying buffer.  Collect
+      fragments into a list and ``"".join()`` once.
+    """
     if not _contact_data:
         return ""
-    summary = "\n\nПОСЛЕДНИЕ КОНТАКТЫ (краткая справка):\n"
-    recent = list(_contact_data.items())[-max_contacts:]
-    for uid, data in recent:
-        msgs = data["messages"][-max_msgs:]
-        summary += f"\n• {data['name']}:\n"
-        for m in msgs:
+
+    # Pull the last max_contacts entries while preserving insertion order.
+    # dict preserves insertion order since Py3.7; slicing the keys avoids
+    # building the full items list.
+    keys = list(_contact_data.keys())
+    if len(keys) > max_contacts:
+        keys = keys[-max_contacts:]
+
+    parts: list[str] = ["\n\nПОСЛЕДНИЕ КОНТАКТЫ (краткая справка):\n"]
+    for uid in keys:
+        data = _contact_data[uid]
+        parts.append(f"\n• {data['name']}:\n")
+        for m in data["messages"][-max_msgs:]:
             role = "Контакт" if m["role"] == "contact" else "Бот"
-            summary += f"  [{m['time']}] {role}: {m['text'][:120]}\n"
-    return summary
+            parts.append(f"  [{m['time']}] {role}: {m['text'][:120]}\n")
+    return "".join(parts)
 
 
 async def _rename_topic_async(bot: Bot, chat_id: int, thread_id: int, name: str) -> None:
