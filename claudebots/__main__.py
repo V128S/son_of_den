@@ -62,9 +62,9 @@ async def _session_guardian(bots: dict) -> None:
 
 async def _daily_usage_resetter(ai_registry) -> None:
     """Reset daily usage counters every UTC midnight."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import UTC, datetime, timedelta
     while True:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
         delay = (next_midnight - now).total_seconds()
         await asyncio.sleep(delay)
