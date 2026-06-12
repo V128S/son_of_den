@@ -1651,6 +1651,27 @@ async def _on_help(message: Message, settings) -> None:
     await message.answer(_HELP_TEXT, parse_mode="Markdown")
 
 # ---------------------------------------------------------------------------
+# Public API for admin router
+# ---------------------------------------------------------------------------
+
+def get_contacts_summary(max_contacts: int = 30) -> str:
+    """Return a formatted list of all known contacts for /contacts command."""
+    if not _contact_data:
+        return "Нет контактов."
+    lines = [f"👥 Контакты ({len(_contact_data)}):\n"]
+    for uid, data in list(_contact_data.items())[-max_contacts:]:
+        msgs = data.get("messages", [])
+        last_in = next(
+            (m["text"][:80] for m in reversed(msgs) if m.get("role") == "contact"),
+            "—",
+        )
+        last_time = msgs[-1]["time"] if msgs else "?"
+        lines.append(f"• {data['name']} (id={uid}) — {last_time}")
+        lines.append(f"  «{last_in}»")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Daily contact digest
 # ---------------------------------------------------------------------------
 

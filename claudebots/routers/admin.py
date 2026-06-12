@@ -98,6 +98,38 @@ async def handle_cost(message: Message, ai_registry: AIRegistry, settings: Setti
     await message.answer("\n".join(lines))
 
 
+@admin_router.message(Command("contacts"))
+async def _contacts(message: Message, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.business import get_contacts_summary  # noqa: PLC0415
+    text = get_contacts_summary()
+    await message.answer(text, parse_mode=None)
+
+
+@admin_router.message(Command("stats"))
+async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.business import _contact_data, _contact_today  # noqa: PLC0415
+    from claudebots.routers.panel import _panel_memories, _panel_topics  # noqa: PLC0415
+
+    daily_total = ai_registry.get_daily_total_usage()
+    all_total = ai_registry.get_total_usage()
+
+    lines = [
+        "📊 Статистика\n",
+        f"Контакты всего: {len(_contact_data)}",
+        f"Активны сегодня: {len(_contact_today)}",
+        f"Топики панели: {len(_panel_topics)}",
+        f"Памяти панели: {len(_panel_memories)}",
+        "",
+        f"Токены сегодня: in={daily_total['input']}  out={daily_total['output']}",
+        f"Токены всего: in={all_total['input']}  out={all_total['output']}",
+    ]
+    await message.answer("\n".join(lines), parse_mode=None)
+
+
 @admin_router.message(Command("reload"))
 async def _reload(message: Message, persona_holder: PersonaHolder, settings: Settings) -> None:
     await handle_reload(message, persona_holder, settings)
