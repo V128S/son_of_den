@@ -1,6 +1,8 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
-from claudebots.core.ai_registry import AIRegistry
+import pytest
+
+from claudebots.core.ai_registry import AIRegistry, FallbackClient
 
 
 def _make_client(inp: int = 0, out: int = 0, cache: int = 0) -> MagicMock:
@@ -85,3 +87,46 @@ def test_daily_usage_never_goes_negative():
     ca.usage["input"] = 30
     daily = reg.get_daily_usage_by_provider()
     assert daily["a"]["input"] == 0
+
+
+# ---------------------------------------------------------------------------
+# FallbackClient tests
+# ---------------------------------------------------------------------------
+
+def _make_async_client(return_value: str = "ok", fail: bool = False) -> MagicMock:
+    c = MagicMock()
+    c.usage = {"input": 0, "output": 0, "cache_read": 0}
+    if fail:
+        c.complete = AsyncMock(side_effect=RuntimeError("service down"))
+    else:
+        c.complete = AsyncMock(return_value=return_value)
+    return c
+
+
+async def test_fallback_client_uses_primary_when_healthy():
+    primary = _make_async_client("primary result")
+    fallback = _make_async_client("fallback result")
+    fc = FallbackClient(primary, fallback, name="test")
+    result = await fc.complete("sys", [{"role": "user", "content": "hi"}])
+    assert result == "primary result"
+    primary.complete.assert_awaited_once()
+    fallback.complete.assert_not_awaited()
+
+
+async def test_fallback_client_uses_fallback_on_primary_failure():
+    primary = _make_async_client(fail=True)
+    fallback = _make_async_client("fallback result")
+    fc = FallbackClient(primary, fallback, name="test")
+    result = await fc.complete("sys", [{"role": "user", "content": "hi"}])
+    assert result == "fallback result"
+    fallback.complete.assert_awaited_once()
+
+
+async def test_fallback_client_usage_mirrors_primary():
+    primary = _make_async_client()
+    primary.usage["input"] = 100
+    fallback = _make_async_client()
+    fc = FallbackClient(primary, fallback, name="test")
+    assert fc.usage is primary.usage
+    primary.usage["input"] += 50
+    assert fc.usage["input"] == 150

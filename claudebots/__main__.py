@@ -7,7 +7,7 @@ from aiogram.types import ErrorEvent
 
 from claudebots.bots import create_all_bots
 from claudebots.core import state as _state
-from claudebots.core.ai_registry import AIClient, AIRegistry
+from claudebots.core.ai_registry import AIClient, AIRegistry, FallbackClient
 from claudebots.core.alerts import AlertSender
 from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.claude_client import ClaudeClient
@@ -153,6 +153,19 @@ async def amain() -> None:
         logger.info("Claude client enabled (model=%s)", settings.claude_model)
     else:
         logger.info("Claude client disabled (ANTHROPIC_API_KEY not set)")
+
+    # Wrap OpenRouter clients with Groq fallback when both are available.
+    # If OpenRouter is down, Groq silently handles creative/pragmatist/gemini-lite personas.
+    groq_client = clients.get("groq")
+    if groq_client is not None:
+        for provider in ("openrouter_deepseek", "openrouter_owl", "openrouter_gemini"):
+            if provider in clients:
+                clients[provider] = FallbackClient(
+                    primary=clients[provider],
+                    fallback=groq_client,
+                    name=provider,
+                )
+                logger.info("Fallback chain: %s → groq", provider)
 
     # Create AI registry
     ai_registry = AIRegistry(clients)

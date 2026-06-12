@@ -37,6 +37,56 @@ class AIClient(Protocol):
     ) -> AsyncIterator[str]: ...
 
 
+class FallbackClient:
+    """Wraps two AIClient instances — tries primary, silently falls back to secondary on error.
+
+    Both clients track their own usage independently.  This wrapper exposes the
+    *primary* client's usage as its own ``usage`` attribute so that AIRegistry
+    accounting is unambiguous (fallback hits show up under the fallback provider's
+    own entry, not under the primary).
+    """
+
+    def __init__(self, primary: AIClient, fallback: AIClient, name: str = "") -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._name = name or "fallback"
+        # usage mirrors the primary client's live dict — no double-counting
+        self.usage: Usage = primary.usage  # shared reference
+
+    async def complete(
+        self,
+        system: str,
+        messages: list[Any],
+        max_tokens: int = 1024,
+        **kwargs: Any,
+    ) -> str:
+        try:
+            return await self._primary.complete(system, messages, max_tokens, **kwargs)  # type: ignore[call-arg]
+        except Exception as exc:
+            logger.warning("[%s] primary failed (%s), falling back: %s", self._name, type(exc).__name__, exc)
+            return await self._fallback.complete(system, messages, max_tokens)
+
+    async def stream(
+        self,
+        system: str,
+        messages: list[Any],
+        max_tokens: int = 1024,
+    ) -> AsyncIterator[str]:
+        yielded_any = False
+        try:
+            async for chunk in self._primary.stream(system, messages, max_tokens):
+                yielded_any = True
+                yield chunk
+        except Exception as exc:
+            if yielded_any:
+                # Already started streaming — can't transparently switch mid-stream
+                logger.warning("[%s] primary stream failed mid-way: %s", self._name, exc)
+                raise
+            logger.warning("[%s] primary stream failed (%s), falling back: %s", self._name, type(exc).__name__, exc)
+            async for chunk in self._fallback.stream(system, messages, max_tokens):
+                yield chunk
+
+
 class AIRegistry:
     """Registry that maps provider names to AI client instances.
 
