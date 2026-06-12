@@ -6,10 +6,13 @@ interface. Used when Claude returns RateLimitError or its circuit breaker opens.
 Groq exposes an OpenAI-compatible chat-completions API, so messages are sent
 as [{"role": "system", ...}, {"role": "user", ...}, ...]. Groq does NOT
 support prompt caching, so `usage["cache_read"]` is always 0.
+
+Also provides `transcribe_voice()` — wraps Groq's Whisper endpoint.
 """
 
 import logging
 from collections.abc import AsyncIterator
+from io import BytesIO
 from typing import Any
 
 from groq import AsyncGroq
@@ -51,6 +54,24 @@ class GroqClient:
         if not content.strip():
             logger.warning("Groq returned empty content. finish_reason=%s", choice.finish_reason)
         return content
+
+    async def transcribe_voice(
+        self,
+        audio_data: bytes,
+        filename: str = "voice.ogg",
+        language: str = "ru",
+        model: str = "whisper-large-v3-turbo",
+    ) -> str:
+        """Transcribe audio bytes with Groq Whisper. Returns plain text."""
+        bio = BytesIO(audio_data)
+        bio.name = filename
+        result = await self._sdk.audio.transcriptions.create(
+            file=(filename, bio),
+            model=model,
+            language=language,
+            response_format="text",
+        )
+        return result.strip() if isinstance(result, str) else str(result).strip()
 
     async def stream(
         self,

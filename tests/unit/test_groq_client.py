@@ -160,3 +160,38 @@ async def test_stream_passes_stream_options():
     kwargs = sdk.chat.completions.create.call_args.kwargs
     assert kwargs["stream"] is True
     assert kwargs["stream_options"] == {"include_usage": True}
+
+
+# ── Voice transcription ────────────────────────────────────────────────────
+
+
+async def test_transcribe_voice_returns_text():
+    transcription = MagicMock()
+    transcription.__str__ = lambda self: "Привет мир"
+
+    sdk = MagicMock()
+    sdk.audio.transcriptions.create = AsyncMock(return_value="Привет мир")
+
+    client = GroqClient.__new__(GroqClient)
+    client._sdk = sdk
+    client.usage = {"input": 0, "output": 0, "cache_read": 0}
+
+    result = await client.transcribe_voice(b"fake-ogg-bytes", filename="voice.ogg", language="ru")
+
+    assert result == "Привет мир"
+    kwargs = sdk.audio.transcriptions.create.call_args.kwargs
+    assert kwargs["model"] == "whisper-large-v3-turbo"
+    assert kwargs["language"] == "ru"
+    assert kwargs["response_format"] == "text"
+
+
+async def test_transcribe_voice_strips_whitespace():
+    sdk = MagicMock()
+    sdk.audio.transcriptions.create = AsyncMock(return_value="  hello world  \n")
+
+    client = GroqClient.__new__(GroqClient)
+    client._sdk = sdk
+    client.usage = {"input": 0, "output": 0, "cache_read": 0}
+
+    result = await client.transcribe_voice(b"bytes")
+    assert result == "hello world"

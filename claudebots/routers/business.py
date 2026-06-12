@@ -449,6 +449,99 @@ async def _on_private_message(
     )
 
 
+@business_router.message(F.voice & F.chat.type.in_({"private", "supergroup"}))
+async def _on_voice_message(
+    message: Message,
+    bot: Bot,
+    ai_registry: AIRegistry,
+    conv: ConversationStore,
+    personas: PersonaRegistry,
+    alerts: AlertSender,
+    settings,
+    bots: dict[str, Bot],
+    calendar_client: "GoogleCalendarClient | None" = None,
+    meters_client: "MetersClient | None" = None,
+    insta_downloader: "InstagramDownloader | None" = None,
+    yt_downloader: "YTDownloader | None" = None,
+) -> None:
+    """Transcribe owner's voice message via Groq Whisper and route as text."""
+    if message.business_connection_id:
+        return
+    if not message.from_user or message.from_user.id != settings.admin_user_id:
+        return
+
+    # Require Groq client for transcription
+    try:
+        from claudebots.core.groq_client import GroqClient
+        groq_client = ai_registry.get_client("groq")
+        if not isinstance(groq_client, GroqClient):
+            raise KeyError("not GroqClient")
+    except (KeyError, Exception):
+        await message.answer("⚠️ Голосовые сообщения недоступны: Groq не настроен (GROQ_API_KEY не задан).")
+        return
+
+    try:
+        await bot.send_chat_action(
+            chat_id=message.chat.id, action="typing",
+            message_thread_id=message.message_thread_id,
+        )
+    except Exception:
+        pass
+
+    # Download voice file (Telegram sends OGG/Opus — supported by Whisper)
+    from io import BytesIO
+    try:
+        voice_file = await bot.get_file(message.voice.file_id)
+        bio = BytesIO()
+        await bot.download_file(voice_file.file_path, bio)
+        audio_bytes = bio.getvalue()
+    except Exception as e:
+        logger.warning("Voice download failed: %s", e)
+        await message.answer("⚠️ Не удалось загрузить голосовое сообщение.")
+        return
+
+    # Transcribe
+    try:
+        text = await groq_client.transcribe_voice(audio_bytes, filename="voice.ogg", language="ru")
+    except Exception as e:
+        logger.warning("Groq transcription failed: %s", e)
+        await message.answer(f"⚠️ Транскрипция не удалась: {e}")
+        return
+
+    if not text:
+        await message.answer("⚠️ Не удалось распознать речь.")
+        return
+
+    # Show transcription as a small confirmation, then route as normal text
+    try:
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=f"🎙 _{text}_",
+            message_thread_id=message.message_thread_id,
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+
+    # Patch the message object with synthesised text so handle_private_message
+    # processes it exactly like a typed message
+    message.text = text  # type: ignore[assignment]
+    await handle_private_message(
+        message=message,
+        bot=bot,
+        ai_registry=ai_registry,
+        conv=conv,
+        personas=personas,
+        alerts=alerts,
+        admin_user_id=settings.admin_user_id,
+        panel_chat_id=settings.panel_chat_id,
+        panel_bot=bots.get("moderator"),
+        calendar_client=calendar_client,
+        meters_client=meters_client,
+        insta_downloader=insta_downloader,
+        yt_downloader=yt_downloader,
+    )
+
 
 async def _extract_calendar_event(
     text: str,
@@ -812,6 +905,89 @@ async def _close_topic_async(bot: Bot, chat_id: int, thread_id: int) -> None:
         logger.debug("close_forum_topic %d: %s", thread_id, e)
 
 
+async def _prepare_media_send(
+    *,
+    message: Message,
+    bot: Bot,
+    panel_bot: Bot | None,
+    panel_chat_id: int | None,
+    topic_key: str,
+    topic_name: str,
+    wait_text: str,
+    chat_action: str,
+) -> "tuple[int, int | None, Message | None, Bot]":
+    """Resolve the target forum topic for a media download and send a placeholder.
+
+    Returns (send_chat, thread_id, wait_msg, send_bot).
+
+    Handles:
+    - DM → supergroup routing via _admin_supergroup_id
+    - Topic lookup / creation / recovery on stale thread IDs
+    - Sending the "downloading…" placeholder
+    """
+    chat_type = getattr(message.chat, "type", None)
+
+    send_chat: int = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
+    is_supergroup = (
+        send_chat is not None
+        and (
+            (chat_type == "supergroup" and send_chat == message.chat.id)
+            or (_admin_supergroup_id is not None and send_chat == _admin_supergroup_id)
+            or (panel_chat_id is not None and send_chat == panel_chat_id)
+        )
+    )
+    send_bot: Bot = panel_bot if (send_chat == panel_chat_id and panel_bot is not None) else bot
+    thread_id: int | None = message.message_thread_id
+
+    if is_supergroup:
+        cached = _admin_topics.get(topic_key)
+        if cached is None:
+            try:
+                t = await send_bot.create_forum_topic(chat_id=send_chat, name=topic_name)
+                thread_id = t.message_thread_id
+                _admin_topics[topic_key] = thread_id
+                _persist_business_state()
+                logger.info("Created %s topic chat=%d id=%d", topic_name, send_chat, thread_id)
+            except Exception as te:
+                logger.warning("create %s topic failed: %s", topic_name, te)
+                send_chat = message.chat.id
+                thread_id = message.message_thread_id
+        else:
+            thread_id = cached
+    else:
+        thread_id = None
+
+    try:
+        await send_bot.send_chat_action(chat_id=send_chat, action=chat_action, message_thread_id=thread_id)
+    except Exception:
+        pass
+
+    wait_msg: Message | None = None
+    try:
+        wait_msg = await send_bot.send_message(
+            chat_id=send_chat, text=wait_text, message_thread_id=thread_id, parse_mode=None,
+        )
+    except Exception as we:
+        # Thread likely deleted — recover by creating a fresh topic
+        logger.warning("Placeholder send to topic %s failed: %s. Recovering.", thread_id, we)
+        if is_supergroup:
+            _admin_topics.pop(topic_key, None)
+            try:
+                t2 = await send_bot.create_forum_topic(chat_id=send_chat, name=topic_name)
+                thread_id = t2.message_thread_id
+                _admin_topics[topic_key] = thread_id
+                _persist_business_state()
+                wait_msg = await send_bot.send_message(
+                    chat_id=send_chat, text=wait_text, message_thread_id=thread_id, parse_mode=None,
+                )
+            except Exception as re2:
+                logger.error("Failed to recover %s topic: %s", topic_name, re2)
+                send_chat = message.chat.id
+                thread_id = message.message_thread_id
+
+    return send_chat, thread_id, wait_msg, send_bot
+
+
 async def handle_private_message(
     *,
     message: Message,
@@ -909,108 +1085,13 @@ async def handle_private_message(
     if is_owner_mode and insta_downloader is not None:
         _insta_url = _detect_insta_url(text)
         if _insta_url:
-            # Determine target topic: use/create "📸 Instagram" in the business
-            # supergroup. Works both when Denis sends from the supergroup directly
-            # AND from a private DM (we use the remembered _admin_supergroup_id).
-            _insta_send_chat = (
-                message.chat.id if chat_type == "supergroup" else _admin_supergroup_id
+            _insta_send_chat = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
+            _insta_key = f"📸 Instagram:{_insta_send_chat}"
+            _insta_send_chat, _insta_thread_id, _wait_msg, _insta_bot = await _prepare_media_send(
+                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
+                topic_key=_insta_key, topic_name="📸 Instagram",
+                wait_text="⏬ Скачиваю...", chat_action="upload_video",
             )
-
-            # Only use/create forum topics if we have a real supergroup target.
-            # Guard against None == None (when _admin_supergroup_id not yet known).
-            is_target_supergroup = (
-                (_insta_send_chat is not None)
-                and (
-                    (chat_type == "supergroup" and _insta_send_chat == message.chat.id)
-                    or (_admin_supergroup_id is not None and _insta_send_chat == _admin_supergroup_id)
-                    or (panel_chat_id is not None and _insta_send_chat == panel_chat_id)
-                )
-            )
-
-            # Determine which bot instance to use: if sending to panel supergroup, use panel_bot (Moderator)
-            # which has access there. Otherwise use business bot.
-            _insta_bot = panel_bot if (_insta_send_chat == panel_chat_id and panel_bot is not None) else bot
-
-            _insta_thread_id = message.message_thread_id  # fallback if no forum
-            if _insta_send_chat is not None and is_target_supergroup:
-                _insta_key = f"📸 Instagram:{_insta_send_chat}"
-                _insta_thread_id = _admin_topics.get(_insta_key)
-                if _insta_thread_id is None:
-                    try:
-                        _insta_t = await _insta_bot.create_forum_topic(
-                            chat_id=_insta_send_chat, name="📸 Instagram"
-                        )
-                        _insta_thread_id = _insta_t.message_thread_id
-                        _admin_topics[_insta_key] = _insta_thread_id
-                        _persist_business_state()
-                        logger.info("Created Instagram topic chat=%d id=%d",
-                                    _insta_send_chat, _insta_thread_id)
-                    except Exception as _te:
-                        logger.warning("create Instagram topic failed: %s", _te)
-                        _insta_send_chat = message.chat.id
-                        _insta_thread_id = message.message_thread_id
-            else:
-                # Private chat or no supergroup: send directly to the DM without topics
-                if _insta_send_chat is None:
-                    _insta_send_chat = message.chat.id
-                _insta_thread_id = None
-
-            try:
-                await _insta_bot.send_chat_action(
-                    chat_id=_insta_send_chat, action="upload_video",
-                    message_thread_id=_insta_thread_id,
-                )
-            except Exception:
-                pass
-
-            _wait_msg = None
-            try:
-                _wait_msg = await _insta_bot.send_message(
-                    chat_id=_insta_send_chat,
-                    text="⏬ Скачиваю...",
-                    message_thread_id=_insta_thread_id,
-                    parse_mode=None,
-                )
-            except Exception as _we:
-                # If the thread ID was deleted or invalid in Telegram, recover by creating a new topic
-                logger.warning("Failed to send download message to topic %s: %s. Retrying with a new topic.", _insta_thread_id, _we)
-                if is_target_supergroup:
-                    _admin_topics.pop(_insta_key, None)
-                    try:
-                        _insta_t = await _insta_bot.create_forum_topic(
-                            chat_id=_insta_send_chat, name="📸 Instagram"
-                        )
-                        _insta_thread_id = _insta_t.message_thread_id
-                        _admin_topics[_insta_key] = _insta_thread_id
-                        _persist_business_state()
-                        logger.info("Re-created Instagram topic chat=%d id=%d",
-                                    _insta_send_chat, _insta_thread_id)
-                        
-                        _wait_msg = await _insta_bot.send_message(
-                            chat_id=_insta_send_chat,
-                            text="⏬ Скачиваю...",
-                            message_thread_id=_insta_thread_id,
-                            parse_mode=None,
-                        )
-                    except Exception as _retry_err:
-                        logger.error("Failed to recover Instagram topic: %s", _retry_err)
-                        _insta_send_chat = message.chat.id
-                        _insta_thread_id = message.message_thread_id
-                        _wait_msg = await _insta_bot.send_message(
-                            chat_id=_insta_send_chat,
-                            text="⏬ Скачиваю...",
-                            message_thread_id=_insta_thread_id,
-                            parse_mode=None,
-                        )
-                else:
-                    _insta_send_chat = message.chat.id
-                    _insta_thread_id = message.message_thread_id
-                    _wait_msg = await _insta_bot.send_message(
-                        chat_id=_insta_send_chat,
-                        text="⏬ Скачиваю...",
-                        message_thread_id=_insta_thread_id,
-                        parse_mode=None,
-                    )
 
             _media_files = await insta_downloader.download(_insta_url)
             try:
@@ -1023,8 +1104,7 @@ async def handle_private_message(
                 await _insta_bot.send_message(
                     chat_id=_insta_send_chat,
                     text="❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна.",
-                    message_thread_id=_insta_thread_id,
-                    parse_mode=None,
+                    message_thread_id=_insta_thread_id, parse_mode=None,
                 )
                 return
 
@@ -1034,19 +1114,12 @@ async def handle_private_message(
                     _f = _media_files[0]
                     _inp = FSInputFile(str(_f.path))
                     if _f.media_type == "photo":
-                        await _insta_bot.send_photo(_insta_send_chat, _inp,
-                                             caption=_f.caption or None,
-                                             message_thread_id=_insta_thread_id)
+                        await _insta_bot.send_photo(_insta_send_chat, _inp, caption=_f.caption or None, message_thread_id=_insta_thread_id)
                     elif _f.media_type == "video":
-                        await _insta_bot.send_video(_insta_send_chat, _inp,
-                                             caption=_f.caption or None,
-                                             message_thread_id=_insta_thread_id)
+                        await _insta_bot.send_video(_insta_send_chat, _inp, caption=_f.caption or None, message_thread_id=_insta_thread_id)
                     else:
-                        await _insta_bot.send_document(_insta_send_chat, _inp,
-                                                caption=_f.caption or None,
-                                                message_thread_id=_insta_thread_id)
+                        await _insta_bot.send_document(_insta_send_chat, _inp, caption=_f.caption or None, message_thread_id=_insta_thread_id)
                 else:
-                    # Carousel — send as media group (max 10)
                     _group = []
                     for _i, _f in enumerate(_media_files[:10]):
                         _inp = FSInputFile(str(_f.path))
@@ -1055,23 +1128,14 @@ async def handle_private_message(
                             _group.append(InputMediaPhoto(media=_inp, caption=_cap))
                         else:
                             _group.append(InputMediaVideo(media=_inp, caption=_cap))
-                    await _insta_bot.send_media_group(_insta_send_chat, _group,
-                                               message_thread_id=_insta_thread_id)
+                    await _insta_bot.send_media_group(_insta_send_chat, _group, message_thread_id=_insta_thread_id)
 
-                # Send private confirmation if we routed it from private DM to the supergroup
                 if chat_type == "private" and _insta_send_chat != message.chat.id:
                     try:
-                        await bot.send_message(
-                            chat_id=message.chat.id,
-                            text="✅ Скачал и отправил в топик 📸 Instagram",
-                            parse_mode=None,
-                        )
+                        await bot.send_message(chat_id=message.chat.id, text="✅ Скачал и отправил в топик 📸 Instagram", parse_mode=None)
                     except Exception as _pe:
-                        logger.debug("Failed to send private Instagram confirmation: %s", _pe)
+                        logger.debug("Instagram DM confirmation failed: %s", _pe)
 
-                # If we routed this to the permanent Instagram topic, and it was sent
-                # in a different/new forum topic, close the source forum topic so it
-                # doesn't clutter the group.
                 if chat_type == "supergroup" and message.message_thread_id:
                     if (
                         _insta_thread_id is not None
@@ -1082,24 +1146,18 @@ async def handle_private_message(
                         import asyncio as _aio
                         _t = _aio.create_task(_close_topic_async(bot, message.chat.id, message.message_thread_id))
                         _t.add_done_callback(
-                            lambda t: logger.warning("close_topic task for Instagram link raised: %s", t.exception())
+                            lambda t: logger.warning("close_topic for Instagram raised: %s", t.exception())
                             if not t.cancelled() and t.exception() else None
                         )
             except Exception as _e:
                 logger.warning("Instagram send failed: %s", _e)
                 await _insta_bot.send_message(
-                    chat_id=_insta_send_chat,
-                    text=f"⚠️ Скачал, но не смог отправить: {_e}",
-                    message_thread_id=_insta_thread_id,
-                    parse_mode=None,
+                    chat_id=_insta_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
+                    message_thread_id=_insta_thread_id, parse_mode=None,
                 )
                 if chat_type == "private" and _insta_send_chat != message.chat.id:
                     try:
-                        await bot.send_message(
-                            chat_id=message.chat.id,
-                            text=f"⚠️ Не удалось отправить в топик: {_e}",
-                            parse_mode=None,
-                        )
+                        await bot.send_message(chat_id=message.chat.id, text=f"⚠️ Не удалось отправить в топик: {_e}", parse_mode=None)
                     except Exception:
                         pass
             finally:
@@ -1110,96 +1168,23 @@ async def handle_private_message(
     if is_owner_mode and yt_downloader is not None:
         _yt_url = _detect_yt_url(text)
         if _yt_url:
-            # Determine target chat: same logic as Instagram
-            _yt_send_chat = (
-                message.chat.id if chat_type == "supergroup" else _admin_supergroup_id
+            _yt_send_chat = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
+            _yt_key = f"🎵 YouTube:{_yt_send_chat}"
+            _yt_send_chat, _yt_thread_id, _yt_wait_msg, _yt_bot = await _prepare_media_send(
+                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
+                topic_key=_yt_key, topic_name="🎵 YouTube",
+                wait_text="⏬ Скачиваю аудио…", chat_action="upload_document",
             )
-            # Guard against None == None (when _admin_supergroup_id not yet known).
-            _is_yt_supergroup = (
-                (_yt_send_chat is not None)
-                and (
-                    (chat_type == "supergroup" and _yt_send_chat == message.chat.id)
-                    or (_admin_supergroup_id is not None and _yt_send_chat == _admin_supergroup_id)
-                    or (panel_chat_id is not None and _yt_send_chat == panel_chat_id)
-                )
-            )
-            _yt_bot = panel_bot if (_yt_send_chat == panel_chat_id and panel_bot is not None) else bot
-            _yt_thread_id: int | None = message.message_thread_id
-
-            if _yt_send_chat is not None and _is_yt_supergroup:
-                _yt_key = f"🎵 YouTube:{_yt_send_chat}"
-                _yt_thread_id = _admin_topics.get(_yt_key)
-                if _yt_thread_id is None:
-                    try:
-                        _yt_t = await _yt_bot.create_forum_topic(
-                            chat_id=_yt_send_chat, name="🎵 YouTube"
-                        )
-                        _yt_thread_id = _yt_t.message_thread_id
-                        _admin_topics[_yt_key] = _yt_thread_id
-                        _persist_business_state()
-                        logger.info("Created YouTube topic chat=%d id=%d",
-                                    _yt_send_chat, _yt_thread_id)
-                    except Exception as _te:
-                        logger.warning("create YouTube topic failed: %s", _te)
-                        _yt_send_chat = message.chat.id
-                        _yt_thread_id = message.message_thread_id
-            else:
-                if _yt_send_chat is None:
-                    _yt_send_chat = message.chat.id
-                _yt_thread_id = None
-
-            # Send "downloading…" placeholder
-            _yt_wait_msg = None
-            try:
-                await _yt_bot.send_chat_action(
-                    chat_id=_yt_send_chat, action="upload_document",
-                    message_thread_id=_yt_thread_id,
-                )
-            except Exception:
-                pass
-            try:
-                _yt_wait_msg = await _yt_bot.send_message(
-                    chat_id=_yt_send_chat,
-                    text="⏬ Скачиваю аудио…",
-                    message_thread_id=_yt_thread_id,
-                    parse_mode=None,
-                )
-            except Exception as _we:
-                logger.warning("Failed to send YT placeholder to topic %s: %s. Retrying.", _yt_thread_id, _we)
-                if _is_yt_supergroup and _yt_send_chat is not None:
-                    _yt_key2 = f"🎵 YouTube:{_yt_send_chat}"
-                    _admin_topics.pop(_yt_key2, None)
-                    try:
-                        _yt_t2 = await _yt_bot.create_forum_topic(
-                            chat_id=_yt_send_chat, name="🎵 YouTube"
-                        )
-                        _yt_thread_id = _yt_t2.message_thread_id
-                        _admin_topics[_yt_key2] = _yt_thread_id
-                        _persist_business_state()
-                        _yt_wait_msg = await _yt_bot.send_message(
-                            chat_id=_yt_send_chat,
-                            text="⏬ Скачиваю аудио…",
-                            message_thread_id=_yt_thread_id,
-                            parse_mode=None,
-                        )
-                    except Exception as _retry_err:
-                        logger.error("Failed to recover YouTube topic: %s", _retry_err)
-                        _yt_send_chat = message.chat.id
-                        _yt_thread_id = message.message_thread_id
 
             _yt_audio: _YTAudioFile | None = None
             try:
                 _yt_audio = await yt_downloader.download_audio(_yt_url)
-
                 if _yt_audio is None:
                     raise RuntimeError("yt_downloader вернул None — возможно видео недоступно")
 
-                # Delete placeholder
                 if _yt_wait_msg is not None:
                     try:
-                        await _yt_bot.delete_message(
-                            chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id
-                        )
+                        await _yt_bot.delete_message(chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id)
                     except Exception:
                         pass
 
@@ -1209,60 +1194,40 @@ async def handle_private_message(
 
                 if _yt_audio.send_as_audio:
                     await _yt_bot.send_audio(
-                        chat_id=_yt_send_chat,
-                        audio=_yt_inp,
-                        title=_yt_audio.title or None,
-                        duration=_yt_audio.duration_s or None,
-                        caption=_yt_caption,
-                        message_thread_id=_yt_thread_id,
-                        parse_mode=None,
+                        chat_id=_yt_send_chat, audio=_yt_inp,
+                        title=_yt_audio.title or None, duration=_yt_audio.duration_s or None,
+                        caption=_yt_caption, message_thread_id=_yt_thread_id, parse_mode=None,
                     )
                 else:
                     await _yt_bot.send_document(
-                        chat_id=_yt_send_chat,
-                        document=_yt_inp,
-                        caption=_yt_caption,
-                        message_thread_id=_yt_thread_id,
-                        parse_mode=None,
+                        chat_id=_yt_send_chat, document=_yt_inp,
+                        caption=_yt_caption, message_thread_id=_yt_thread_id, parse_mode=None,
                     )
 
-                # Confirm to private chat if we routed to supergroup
                 if chat_type == "private" and _yt_send_chat != message.chat.id:
                     try:
-                        await bot.send_message(
-                            chat_id=message.chat.id,
-                            text="✅ Аудио скачано и отправлено в топик 🎵 YouTube",
-                            parse_mode=None,
-                        )
+                        await bot.send_message(chat_id=message.chat.id, text="✅ Аудио скачано и отправлено в топик 🎵 YouTube", parse_mode=None)
                     except Exception as _pe:
-                        logger.debug("Failed to send YT private confirmation: %s", _pe)
+                        logger.debug("YouTube DM confirmation failed: %s", _pe)
 
             except Exception as _e:
                 logger.warning("YouTube send failed: %s", _e)
                 try:
                     if _yt_wait_msg is not None:
                         await _yt_bot.edit_message_text(
-                            chat_id=_yt_send_chat,
-                            message_id=_yt_wait_msg.message_id,
-                            text=f"⚠️ Не удалось скачать аудио: {_e}",
-                            parse_mode=None,
+                            chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id,
+                            text=f"⚠️ Не удалось скачать аудио: {_e}", parse_mode=None,
                         )
                     else:
                         await _yt_bot.send_message(
-                            chat_id=_yt_send_chat,
-                            text=f"⚠️ Не удалось скачать аудио: {_e}",
-                            message_thread_id=_yt_thread_id,
-                            parse_mode=None,
+                            chat_id=_yt_send_chat, text=f"⚠️ Не удалось скачать аудио: {_e}",
+                            message_thread_id=_yt_thread_id, parse_mode=None,
                         )
                 except Exception:
                     pass
                 if chat_type == "private" and _yt_send_chat != message.chat.id:
                     try:
-                        await bot.send_message(
-                            chat_id=message.chat.id,
-                            text=f"⚠️ Не удалось скачать аудио: {_e}",
-                            parse_mode=None,
-                        )
+                        await bot.send_message(chat_id=message.chat.id, text=f"⚠️ Не удалось скачать аудио: {_e}", parse_mode=None)
                     except Exception:
                         pass
             finally:
@@ -1436,6 +1401,11 @@ async def handle_private_message(
 # ---------------------------------------------------------------------------
 
 _HELP_TEXT = """🤖 *Справка — возможности бота*
+
+━━━━━━━━━━━━━━━━━━━━━
+🎙 *Голосовые сообщения*
+━━━━━━━━━━━━━━━━━━━━━
+Запиши голосовое сообщение — бот транскрибирует его через Groq Whisper и ответит как на текст. Работает в личке и в топиках группы. Требует настроенного `GROQ_API_KEY`.
 
 ━━━━━━━━━━━━━━━━━━━━━
 📸 *Instagram — скачать медиа*

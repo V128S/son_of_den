@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (124 tests, e2e excluded by default)
+# Run all tests (162 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -61,6 +61,9 @@ Background tasks started at boot:
 | `state.py` | Atomic JSON persistence for topic mappings (`bot_state.json`). `load()` / `save()` / `update()`. Helpers for int-key encoding (JSON requires string keys). |
 | `alerts.py` | `AlertSender` — sends throttled admin notifications (one per `alert_key` per window, 4096-char truncation). |
 | `calendar_client.py` | Reads Google Calendar via Service Account. 60 s in-memory cache. Optional — bot works without it. |
+| `obsidian_client.py` | `ObsidianClient` — writes contact conversation history to local Obsidian vault (`Contacts/{name}.md`, `Daily/{date}.md`). Disabled when `OBSIDIAN_VAULT_PATH` is empty. |
+| `sheets_client.py` | `GoogleSheetsClient` — reads a contact's Google Sheet price list and transfers rows (with markup) to the owner's personal sheet. Enabled when `GOOGLE_SERVICE_ACCOUNT_FILE` and `SHEETS_PERSONAL_ID` are both set. |
+| `meters_client.py` | `MetersClient` — parses free-text meter readings (gas/water/electricity) via AI and appends them to a Google Sheet. Enabled when `METERS_SHEET_ID` is set. |
 | `feed_monitor.py` | Polls `rsshub.app/telegram/channel/<slug>` (Atom); falls back to `t.me/s/<slug>` scraping on 403. Scores entries with the cheapest available AI; fires `PanelRoundRunner` when score ≥ `FEED_MIN_SCORE`. |
 
 ### Services (`claudebots/services/`)
@@ -72,12 +75,14 @@ Background tasks started at boot:
 
 ### Routers (`claudebots/routers/`)
 
-**`business.py`** handles two distinct message types on the same bot:
+**`business.py`** handles several message types on the same bot:
 - **Business messages** (`@business_router.business_message`) — auto-replies on behalf of the owner using streaming. Mirrors incoming and outgoing messages to the admin via per-contact forum topics.
 - **Private/supergroup messages** (`_on_private_message`) — owner-mode vs. regular-user mode. Owner gets a non-streaming `complete()` call; non-owner gets the streaming placeholder flow. Forwarded channel posts trigger a panel round via `_on_forward_to_panel`.
+- **Voice messages** (`_on_voice_message`) — owner sends a voice note, bot transcribes it via Groq Whisper (`whisper-large-v3-turbo`) and routes as regular text. Shows the transcription in italics before the AI reply. Requires `GROQ_API_KEY`.
 - **Instagram downloader** — detects Instagram URLs in owner messages, downloads media via `InstagramDownloader`, sends to a persistent `📸 Instagram` forum topic (key `"📸 Instagram:{chat_id}"`). Works from DM and supergroup. Recovers automatically if topic is deleted.
 - **YouTube audio** — detects YouTube URLs in owner messages, downloads best audio via `YTDownloader`, sends as audio (or document if >50 MB) to a persistent `🎵 YouTube` forum topic (key `"🎵 YouTube:{chat_id}"`). Uses `FSInputFile` for aiogram 3.x compatibility.
 - **Owner topic categorisation** — when the admin writes in a forum topic (not a contact topic), the message is classified into one of 9 fixed categories and routed to the matching topic (or the topic is renamed). Uses `openrouter_gemini` for classification.
+- `_prepare_media_send()` — shared helper that resolves the target forum topic (get-or-create with recovery) and sends a placeholder message. Used by both Instagram and YouTube handlers to avoid duplication.
 - Module-level dicts (`_contact_topics`, `_admin_topics`, `_admin_supergroup_id`, etc.) are the in-memory state; `_persist_business_state()` flushes them to `bot_state.json` via `state.update()`.
 
 **`panel.py`** orchestrates the 5-bot discussion:
