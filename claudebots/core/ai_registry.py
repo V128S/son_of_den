@@ -29,7 +29,7 @@ class AIClient(Protocol):
         max_tokens: int = 1024,
     ) -> str: ...
 
-    async def stream(
+    def stream(
         self,
         system: str,
         messages: list[Any],
@@ -61,7 +61,7 @@ class FallbackClient:
         **kwargs: Any,
     ) -> str:
         try:
-            return await self._primary.complete(system, messages, max_tokens, **kwargs)  # type: ignore[call-arg]
+            return await self._primary.complete(system, messages, max_tokens, **kwargs)
         except Exception as exc:
             logger.warning("[%s] primary failed (%s), falling back: %s", self._name, type(exc).__name__, exc)
             return await self._fallback.complete(system, messages, max_tokens)
@@ -148,7 +148,11 @@ class AIRegistry:
 
     def snapshot_usage(self) -> dict[str, Usage]:
         """Serialise current per-provider usage counters for JSON persistence."""
-        return {name: dict(client.usage) for name, client in self._clients.items()}  # type: ignore[return-value]
+        result: dict[str, Usage] = {}
+        for name, client in self._clients.items():
+            u = client.usage
+            result[name] = {"input": u["input"], "output": u["output"], "cache_read": u["cache_read"]}
+        return result
 
     def restore_usage(self, snapshot: dict[str, Any]) -> None:
         """Add persisted counters on top of current (in-memory) values.
