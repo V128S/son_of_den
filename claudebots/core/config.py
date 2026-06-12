@@ -88,3 +88,7 @@ class Settings(BaseSettings):
     # Set to empty string to disable.
     morning_briefing_time: str = "09:00"
 
+    # Exa web search — optional enrichment for panel discussions.
+    # Leave empty to disable web search (panel works without it).
+    exa_api_key: SecretStr | None = None
+

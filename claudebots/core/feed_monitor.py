@@ -191,6 +191,7 @@ class FeedMonitor:
         conv: ConversationStore,
         alerts: AlertSender,
         panel_chat_id: int,
+        search_client=None,
     ) -> None:
         self._channels = channels
         self._interests = interests
@@ -206,6 +207,7 @@ class FeedMonitor:
         self._conv = conv
         self._alerts = alerts
         self._panel_chat_id = panel_chat_id
+        self._search_client = search_client
 
     async def run_once(self) -> None:
         """Check feeds and fire a round if a worthy entry is found."""
@@ -269,6 +271,7 @@ class FeedMonitor:
             alerts=self._alerts,
             panel_chat_id=self._panel_chat_id,
             thread_id=None,
+            search_client=self._search_client,
         )
         _t = asyncio.create_task(runner.run_round(topic))
         _t.add_done_callback(
@@ -363,6 +366,7 @@ def start_feed_monitor(
     conv: ConversationStore,
     alerts: AlertSender,
     panel_chat_id: int,
+    search_client=None,
 ) -> asyncio.Task:
     """Create and start the feed monitor background task; return the Task."""
     available = list(ai_registry.providers)
@@ -385,6 +389,7 @@ def start_feed_monitor(
         conv=conv,
         alerts=alerts,
         panel_chat_id=panel_chat_id,
+        search_client=search_client,
     )
     task = asyncio.create_task(_feed_loop(monitor, check_interval_seconds))
     task.add_done_callback(

@@ -569,25 +569,28 @@ async def _extract_calendar_event(
         f"Текущее время: {now_str} ({tz_name})\n"
         f"Сообщение от контакта: {text[:600]}\n\n"
         "Если в сообщении упоминается конкретная дата/время встречи/созвона/звонка — "
-        "верни JSON с полями: summary (название), start_iso (ISO 8601 со временем зоны), "
-        "end_iso (start + 1 час по умолчанию), description (необязательно), location (необязательно).\n"
-        "Если конкретной даты нет — верни только слово: нет"
+        "верни JSON с полями: found (true), summary (название), start_iso (ISO 8601 со временем зоны), "
+        "end_iso (start + 1 час по умолчанию), description (строка или null), location (строка или null).\n"
+        "Если конкретной даты нет — верни JSON: {\"found\": false}."
     )
     try:
         client = ai_registry.get_client("openrouter_gemini")
+        from claudebots.core.openrouter_client import OpenRouterClient as _ORC
+        json_mode = isinstance(client, _ORC)
         raw = await client.complete(
-            system="Ты извлекаешь данные о встречах из сообщений. Отвечай строго JSON или словом нет.",
+            system="Ты извлекаешь данные о встречах из сообщений. Всегда отвечай валидным JSON.",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
+            **({"json_mode": True} if json_mode else {}),
         )
         raw = raw.strip()
-        if raw.lower().startswith("нет") or raw.lower() == "no":
-            return None
-        # Strip markdown code fences if present
+        # Strip markdown code fences if present (fallback for providers without json_mode)
         raw = raw.strip("` \n")
         if raw.startswith("json"):
             raw = raw[4:]
         data = _json.loads(raw)
+        if not data.get("found"):
+            return None
         # Validate required fields
         if not data.get("summary") or not data.get("start_iso"):
             return None
@@ -603,8 +606,8 @@ async def _extract_calendar_event(
             "summary": data.get("summary", "Встреча"),
             "start_iso": data["start_iso"],
             "end_iso": data["end_iso"],
-            "description": data.get("description", ""),
-            "location": data.get("location", ""),
+            "description": data.get("description") or "",
+            "location": data.get("location") or "",
         }
     except Exception as e:
         logger.debug("_extract_calendar_event: %s", e)

@@ -31,6 +31,7 @@ from claudebots.routers.panel import (
     start_revival_scheduler,
 )
 from claudebots.services.insta_downloader import InstagramDownloader
+from claudebots.services.search_client import SearchClient
 from claudebots.services.social_downloader import SocialDownloader
 from claudebots.services.yt_downloader import YTDownloader
 
@@ -239,6 +240,15 @@ async def amain() -> None:
     social_downloader = SocialDownloader(timeout=90.0)
     logger.info("Social downloader enabled (TikTok, X/Twitter via yt-dlp)")
 
+    # Exa web search (optional — enriches panel discussions with real-world context)
+    search_client = SearchClient(
+        api_key=settings.exa_api_key.get_secret_value() if settings.exa_api_key else None,
+    )
+    if search_client.enabled:
+        logger.info("Exa search client enabled")
+    else:
+        logger.info("Exa search client disabled (EXA_API_KEY not set)")
+
     dp = Dispatcher()
 
     # Dependency injection via workflow_data — every handler receives these as kwargs
@@ -257,6 +267,7 @@ async def amain() -> None:
         insta_downloader=insta_downloader,
         yt_downloader=yt_downloader,
         social_downloader=social_downloader,
+        search_client=search_client,
     )
     if claude is not None:
         workflow["claude"] = claude
@@ -295,6 +306,11 @@ async def amain() -> None:
                     await client.close()
                 except Exception:
                     pass
+        # Close search client
+        try:
+            await search_client.close()
+        except Exception:
+            pass
         # Persist conversation history and usage counters
         try:
             _state.update(
@@ -385,6 +401,7 @@ async def amain() -> None:
             conv=conv,
             alerts=alerts,
             panel_chat_id=settings.panel_chat_id,
+            search_client=search_client,
         )
     else:
         logger.info("Feed monitor disabled (FEED_CHANNELS not set)")

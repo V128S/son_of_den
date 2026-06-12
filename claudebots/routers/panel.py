@@ -273,6 +273,7 @@ class PanelRoundRunner:
     alerts: AlertSender
     panel_chat_id: int
     thread_id: int | None = None
+    search_client: "Any | None" = None  # SearchClient | None — optional web enrichment
 
     def _key(self) -> str:
         return f"panel:{self.panel_chat_id}"
@@ -399,6 +400,16 @@ class PanelRoundRunner:
         # Keep conversation history, just add new topic
         # This allows bots to reference previous discussions
 
+        # Optionally enrich with fresh web data before speakers are invoked
+        search_block = ""
+        if self.search_client is not None and getattr(self.search_client, "enabled", False):
+            try:
+                results = await self.search_client.search(topic, num_results=3)
+                if results:
+                    search_block = self.search_client.format_results(results) + "\n\n"
+            except Exception as _se:
+                logger.debug("Web search failed for panel topic: %s", _se)
+
         # Prepend panel memory so speakers have context from past rounds
         memory_block = ""
         if _panel_memories:
@@ -410,6 +421,7 @@ class PanelRoundRunner:
             memory_block += "\n"
 
         discussion_context = (
+            search_block +
             memory_block +
             f"Тема: {topic}\n\n"
             "- Выскажи своё мнение — прямо и от себя\n"
@@ -907,6 +919,7 @@ async def _on_panel_message(
     conv: ConversationStore,
     alerts: AlertSender,
     settings,
+    search_client=None,
 ) -> None:
     if message.chat.id != settings.panel_chat_id:
         return
@@ -982,6 +995,7 @@ async def _on_panel_message(
             alerts=alerts,
             panel_chat_id=settings.panel_chat_id,
             thread_id=thread_id,
+            search_client=search_client,
         )
         task = asyncio.create_task(runner.run_round(message.text or message.caption or ""))
         task.add_done_callback(

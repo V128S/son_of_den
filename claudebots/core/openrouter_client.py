@@ -45,12 +45,15 @@ class OpenRouterClient:
         system: str,
         messages: list[Any],
         max_tokens: int = 1024,
+        json_mode: bool = False,
     ) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "model": self._model,
             "messages": self._to_openai_messages(system, messages),
             "max_tokens": max_tokens,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         response = await self._client.post("/chat/completions", json=payload)
         response.raise_for_status()
