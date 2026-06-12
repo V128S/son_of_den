@@ -21,6 +21,7 @@ from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
 from claudebots.core.meters_client import MetersClient, looks_like_meter_message, extract_meter_readings
 from claudebots.services.insta_downloader import InstagramDownloader, detect_url as _detect_insta_url
+from claudebots.services.social_downloader import SocialDownloader, detect_platform as _detect_social_platform
 from claudebots.services.yt_downloader import YTDownloader, detect_url as _detect_yt_url, AudioFile as _YTAudioFile
 
 logger = logging.getLogger(__name__)
@@ -426,6 +427,7 @@ async def _on_private_message(
     meters_client: "MetersClient | None" = None,
     insta_downloader: "InstagramDownloader | None" = None,
     yt_downloader: "YTDownloader | None" = None,
+    social_downloader: "SocialDownloader | None" = None,
 ) -> None:
     """Handle direct messages to the business bot in private chat or supergroup with topics."""
     # Skip if it's a business connection message (handled by other handler)
@@ -446,6 +448,7 @@ async def _on_private_message(
         meters_client=meters_client,
         insta_downloader=insta_downloader,
         yt_downloader=yt_downloader,
+        social_downloader=social_downloader,
     )
 
 
@@ -463,6 +466,7 @@ async def _on_voice_message(
     meters_client: "MetersClient | None" = None,
     insta_downloader: "InstagramDownloader | None" = None,
     yt_downloader: "YTDownloader | None" = None,
+    social_downloader: "SocialDownloader | None" = None,
 ) -> None:
     """Transcribe owner's voice message via Groq Whisper and route as text."""
     if message.business_connection_id:
@@ -540,6 +544,7 @@ async def _on_voice_message(
         meters_client=meters_client,
         insta_downloader=insta_downloader,
         yt_downloader=yt_downloader,
+        social_downloader=social_downloader,
     )
 
 
@@ -1003,6 +1008,7 @@ async def handle_private_message(
     meters_client: "MetersClient | None" = None,
     insta_downloader: "InstagramDownloader | None" = None,
     yt_downloader: "YTDownloader | None" = None,
+    social_downloader: "SocialDownloader | None" = None,
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
 ) -> None:
@@ -1234,6 +1240,76 @@ async def handle_private_message(
                 yt_downloader.cleanup(_yt_audio)
             return
 
+    # ── TikTok / X/Twitter downloader ────────────────────────────────────────
+    if is_owner_mode and social_downloader is not None:
+        _social = _detect_social_platform(text)
+        if _social:
+            _social_url, _social_topic_name = _social
+            _social_send_chat = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
+            _social_key = f"{_social_topic_name}:{_social_send_chat}"
+            _social_send_chat, _social_thread_id, _social_wait_msg, _social_bot = await _prepare_media_send(
+                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
+                topic_key=_social_key, topic_name=_social_topic_name,
+                wait_text="⏬ Скачиваю...", chat_action="upload_video",
+            )
+
+            _social_files = await social_downloader.download(_social_url)
+            try:
+                if _social_wait_msg:
+                    await _social_bot.delete_message(chat_id=_social_send_chat, message_id=_social_wait_msg.message_id)
+            except Exception:
+                pass
+
+            if not _social_files:
+                await _social_bot.send_message(
+                    chat_id=_social_send_chat,
+                    text=f"❌ Не удалось скачать. Проверьте, что пост публичный.",
+                    message_thread_id=_social_thread_id, parse_mode=None,
+                )
+                return
+
+            from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
+            try:
+                if len(_social_files) == 1:
+                    _sf = _social_files[0]
+                    _si = FSInputFile(str(_sf.path))
+                    if _sf.media_type == "photo":
+                        await _social_bot.send_photo(_social_send_chat, _si, caption=_sf.caption or None, message_thread_id=_social_thread_id)
+                    elif _sf.media_type == "video":
+                        await _social_bot.send_video(_social_send_chat, _si, caption=_sf.caption or None, message_thread_id=_social_thread_id)
+                    else:
+                        await _social_bot.send_document(_social_send_chat, _si, caption=_sf.caption or None, message_thread_id=_social_thread_id)
+                else:
+                    _sgroup = []
+                    for _si_idx, _sf in enumerate(_social_files[:10]):
+                        _si = FSInputFile(str(_sf.path))
+                        _sc = _sf.caption if _si_idx == 0 else None
+                        if _sf.media_type in ("photo", "document") and _sf.path.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                            _sgroup.append(InputMediaPhoto(media=_si, caption=_sc))
+                        else:
+                            _sgroup.append(InputMediaVideo(media=_si, caption=_sc))
+                    await _social_bot.send_media_group(_social_send_chat, _sgroup, message_thread_id=_social_thread_id)
+
+                if chat_type == "private" and _social_send_chat != message.chat.id:
+                    try:
+                        await bot.send_message(chat_id=message.chat.id, text=f"✅ Скачал и отправил в топик {_social_topic_name}", parse_mode=None)
+                    except Exception as _pe:
+                        logger.debug("Social DM confirmation failed: %s", _pe)
+            except Exception as _e:
+                logger.warning("Social send failed: %s", _e)
+                await _social_bot.send_message(
+                    chat_id=_social_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
+                    message_thread_id=_social_thread_id, parse_mode=None,
+                )
+                if chat_type == "private" and _social_send_chat != message.chat.id:
+                    try:
+                        await bot.send_message(chat_id=message.chat.id, text=f"⚠️ Не удалось отправить в топик: {_e}", parse_mode=None)
+                    except Exception:
+                        pass
+            finally:
+                social_downloader.cleanup(_social_files)
+            return
+
     # For supergroup: classify every owner message and ensure it lands in the right
     # category topic. Telegram Forums auto-create topics with the message text as the
     # name — we intercept that and rename/route to the correct fixed category.
@@ -1425,6 +1501,17 @@ _HELP_TEXT = """🤖 *Справка — возможности бота*
 Пример: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`
 
 Shorts и плейлисты не поддерживаются — только обычные видео.
+
+━━━━━━━━━━━━━━━━━━━━━
+🎬 *TikTok и 🐦 X / Twitter — скачать видео*
+━━━━━━━━━━━━━━━━━━━━━
+Скинь ссылку на публичный TikTok или твит с видео — бот скачает и пришлёт в отдельный топик (*🎬 TikTok* или *🐦 X / Twitter*, создаётся автоматически).
+
+Примеры:
+`https://www.tiktok.com/@user/video/1234567890`
+`https://vm.tiktok.com/XXXXXX/`
+`https://x.com/user/status/1234567890`
+`https://twitter.com/user/status/1234567890`
 
 ━━━━━━━━━━━━━━━━━━━━━
 📊 *Показания счётчиков*

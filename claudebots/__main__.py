@@ -30,6 +30,7 @@ from claudebots.routers.panel import (
     start_revival_scheduler,
 )
 from claudebots.services.insta_downloader import InstagramDownloader
+from claudebots.services.social_downloader import SocialDownloader
 from claudebots.services.yt_downloader import YTDownloader
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,10 @@ async def amain() -> None:
     yt_downloader = YTDownloader(timeout=120.0)
     logger.info("YouTube audio downloader enabled (yt-dlp, public videos only)")
 
+    # TikTok / X/Twitter downloader (always available — uses yt-dlp, public posts only)
+    social_downloader = SocialDownloader(timeout=90.0)
+    logger.info("Social downloader enabled (TikTok, X/Twitter via yt-dlp)")
+
     dp = Dispatcher()
 
     # Dependency injection via workflow_data — every handler receives these as kwargs
@@ -222,6 +227,7 @@ async def amain() -> None:
         meters_client=meters_client,
         insta_downloader=insta_downloader,
         yt_downloader=yt_downloader,
+        social_downloader=social_downloader,
     )
     if claude is not None:
         workflow["claude"] = claude
