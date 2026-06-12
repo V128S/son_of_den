@@ -92,3 +92,23 @@ class AIRegistry:
     def get_usage_by_provider(self) -> dict[str, Usage]:
         """Get usage breakdown by provider."""
         return {name: client.usage for name, client in self._clients.items()}
+
+    def snapshot_usage(self) -> dict[str, Usage]:
+        """Serialise current per-provider usage counters for JSON persistence."""
+        return {name: dict(client.usage) for name, client in self._clients.items()}  # type: ignore[return-value]
+
+    def restore_usage(self, snapshot: dict[str, Any]) -> None:
+        """Add persisted counters on top of current (in-memory) values.
+
+        Called once at startup to resume cumulative counters across restarts.
+        Unknown providers are silently skipped.
+        """
+        for name, saved in snapshot.items():
+            if name not in self._clients:
+                continue
+            if not isinstance(saved, dict):
+                continue
+            u = self._clients[name].usage
+            u["input"] += int(saved.get("input", 0))
+            u["output"] += int(saved.get("output", 0))
+            u["cache_read"] += int(saved.get("cache_read", 0))

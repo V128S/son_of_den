@@ -1,5 +1,5 @@
 from collections import defaultdict, deque
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class Message(TypedDict):
@@ -36,3 +36,27 @@ class ConversationStore:
             return
         while len(current) > max(keep_last, 0):
             current.popleft()
+
+    def snapshot(self) -> dict[str, list[Message]]:
+        """Serialise all conversations to a plain dict (for JSON persistence)."""
+        return {k: list(v) for k, v in self._store.items() if v}
+
+    def restore(self, data: dict[str, Any]) -> None:
+        """Restore conversations from a previously saved snapshot.
+
+        Only messages with valid role/content string fields are accepted;
+        malformed entries are silently skipped to guard against corrupt files.
+        """
+        for key, messages in data.items():
+            if not isinstance(messages, list):
+                continue
+            dq = self._new_deque()
+            for msg in messages:
+                if (
+                    isinstance(msg, dict)
+                    and isinstance(msg.get("role"), str)
+                    and isinstance(msg.get("content"), str)
+                ):
+                    dq.append({"role": msg["role"], "content": msg["content"]})
+            if dq:
+                self._store[key] = dq

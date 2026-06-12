@@ -92,3 +92,46 @@ def test_trim_preserves_maxlen_after_new_adds():
     assert "msg4" in result
     assert "msg5" in result
     assert "msg6" in result
+
+
+def test_snapshot_and_restore_round_trip():
+    store = ConversationStore(max_messages_per_chat=10)
+    store.add("chat:1", "user", "hello")
+    store.add("chat:1", "assistant", "hi there")
+    store.add("chat:2", "user", "other")
+
+    snap = store.snapshot()
+    restored = ConversationStore(max_messages_per_chat=10)
+    restored.restore(snap)
+
+    assert restored.get("chat:1") == store.get("chat:1")
+    assert restored.get("chat:2") == store.get("chat:2")
+
+
+def test_snapshot_excludes_empty_keys():
+    store = ConversationStore(max_messages_per_chat=10)
+    store.add("k1", "user", "x")
+    store.reset("k1")
+    snap = store.snapshot()
+    assert "k1" not in snap
+
+
+def test_restore_respects_maxlen():
+    oversized = [{"role": "user", "content": f"msg{i}"} for i in range(50)]
+    store = ConversationStore(max_messages_per_chat=10)
+    store.restore({"k": oversized})
+    assert len(store.get("k")) == 10
+    assert store.get("k")[-1]["content"] == "msg49"
+
+
+def test_restore_skips_malformed_entries():
+    store = ConversationStore(max_messages_per_chat=10)
+    store.restore({
+        "k": [
+            {"role": "user", "content": "valid"},
+            {"role": 123, "content": "bad role"},
+            "not a dict",
+            {"role": "assistant"},
+        ]
+    })
+    assert store.get("k") == [{"role": "user", "content": "valid"}]

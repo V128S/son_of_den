@@ -158,6 +158,15 @@ async def amain() -> None:
         )
 
     conv = ConversationStore()
+
+    # Restore persisted conversation history and usage counters
+    if "conversations" in _persisted:
+        conv.restore(_persisted["conversations"])
+        logger.info("Conversation history restored (%d keys)", len(_persisted["conversations"]))
+    if "usage" in _persisted:
+        ai_registry.restore_usage(_persisted["usage"])
+        logger.info("Usage counters restored from previous session")
+
     bots = create_all_bots(settings)
     alerts = AlertSender(bot=bots["business"], admin_user_id=settings.admin_user_id)
 
@@ -274,6 +283,18 @@ async def amain() -> None:
                     await client.close()
                 except Exception:
                     pass
+        # Persist conversation history and usage counters
+        try:
+            _state.update(
+                settings.state_file,
+                {
+                    "conversations": conv.snapshot(),
+                    "usage": ai_registry.snapshot_usage(),
+                },
+            )
+            logger.info("Conversation history and usage counters saved to %s", settings.state_file)
+        except Exception as exc:
+            logger.warning("Failed to persist conversations/usage on shutdown: %s", exc)
 
     dp.shutdown.register(on_shutdown)
 
