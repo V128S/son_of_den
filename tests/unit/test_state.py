@@ -122,7 +122,10 @@ def test_init_panel_state_restores_topics(tmp_path, monkeypatch):
 
     assert panel_mod._panel_topics == {111: "💼 Бизнес", 222: "📢 Маркетинг"}
     assert panel_mod._tasks_thread_id == 333
-    assert panel_mod._panel_memories == ["Вывод 1", "Вывод 2"]
+    # Legacy string format is migrated to dict entries on restore
+    assert len(panel_mod._panel_memories) == 2
+    assert panel_mod._panel_memories[0]["text"] == "Вывод 1"
+    assert panel_mod._panel_memories[1]["text"] == "Вывод 2"
 
 
 def test_init_panel_state_handles_empty_data(tmp_path, monkeypatch):

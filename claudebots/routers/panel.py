@@ -65,9 +65,10 @@ REVIVAL_JITTER_SECONDS = 1_800    # ±30 min randomness
 REMINDER_MIN_HOURS: float = 18.0
 REMINDER_MAX_HOURS: float = 20.0
 
-# Panel memory: compact takeaways from past rounds
-_panel_memories: list[str] = []
-PANEL_MEMORY_MAX = 7
+# Panel memory: compact takeaways from past rounds.
+# Each entry: {"text": str, "topic": str, "ts": float (UTC unix timestamp)}
+_panel_memories: list[dict] = []
+PANEL_MEMORY_MAX = 30
 
 # Thread ID for the ✅ Задачи topic in the panel group
 _tasks_thread_id: int | None = None
@@ -140,8 +141,12 @@ def init_panel_state(path: Path, data: dict) -> None:
 
     mems = data.get("panel_memories", [])
     if isinstance(mems, list):
-        _panel_memories.extend(m for m in mems if isinstance(m, str))
-        # Trim to max
+        for m in mems:
+            if isinstance(m, str) and m:
+                # Legacy format: plain string → wrap in dict
+                _panel_memories.append({"text": m, "topic": "", "ts": 0.0})
+            elif isinstance(m, dict) and isinstance(m.get("text"), str) and m["text"]:
+                _panel_memories.append({"text": m["text"], "topic": m.get("topic", ""), "ts": float(m.get("ts", 0))})
         while len(_panel_memories) > PANEL_MEMORY_MAX:
             _panel_memories.pop(0)
 
@@ -397,9 +402,12 @@ class PanelRoundRunner:
         # Prepend panel memory so speakers have context from past rounds
         memory_block = ""
         if _panel_memories:
+            recent = _panel_memories[-7:]
             memory_block = "🧠 Контекст прошлых обсуждений:\n"
-            memory_block += "\n".join(f"• {m}" for m in _panel_memories[-5:])
-            memory_block += "\n\n"
+            for mem in recent:
+                label = f"[{mem['topic']}] " if mem.get("topic") else ""
+                memory_block += f"• {label}{mem['text']}\n"
+            memory_block += "\n"
 
         discussion_context = (
             memory_block +
@@ -494,7 +502,7 @@ class PanelRoundRunner:
 
         # Post-round: extract action items → save memory (best-effort, silent on failure)
         await self._extract_action_items(key, topic)
-        await self._save_panel_memory(key)
+        await self._save_panel_memory(key, topic)
 
     async def _extract_action_items(self, key: str, topic: str) -> None:
         """Extract up to 3 concrete tasks and post to ✅ Задачи; schedule a reminder."""
@@ -557,7 +565,7 @@ class PanelRoundRunner:
         except Exception as e:
             logger.warning("Action items extraction failed: %s", e)
 
-    async def _save_panel_memory(self, key: str) -> None:
+    async def _save_panel_memory(self, key: str, topic: str) -> None:
         """Compress the round into a 1-sentence takeaway and store in panel memory."""
         global _panel_memories
         mod = self.personas.moderator
@@ -580,7 +588,12 @@ class PanelRoundRunner:
             )
             memory = clean_markdown(memory).strip()
             if memory:
-                _panel_memories.append(memory)
+                entry = {
+                    "text": memory,
+                    "topic": topic,
+                    "ts": datetime.now(timezone.utc).timestamp(),
+                }
+                _panel_memories.append(entry)
                 if len(_panel_memories) > PANEL_MEMORY_MAX:
                     _panel_memories.pop(0)
                 logger.info(

@@ -416,7 +416,11 @@ async def test_panel_memory_saved_after_round(
     await runner.run_round("Тема")
 
     assert len(panel_mod._panel_memories) == 1
-    assert "Главный вывод" in panel_mod._panel_memories[0]
+    entry = panel_mod._panel_memories[0]
+    assert isinstance(entry, dict)
+    assert "Главный вывод" in entry["text"]
+    assert entry["topic"] == "Тема"
+    assert entry["ts"] > 0
 
 
 async def test_panel_memory_capped_at_max(
@@ -428,8 +432,8 @@ async def test_panel_memory_capped_at_max(
     import claudebots.routers.panel as panel_mod
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
-    # Pre-fill with PANEL_MEMORY_MAX entries
-    initial = [f"memory {i}" for i in range(panel_mod.PANEL_MEMORY_MAX)]
+    # Pre-fill with PANEL_MEMORY_MAX entries (new dict format)
+    initial = [{"text": f"memory {i}", "topic": "Topic", "ts": 0.0} for i in range(panel_mod.PANEL_MEMORY_MAX)]
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", list(initial))
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
@@ -449,8 +453,8 @@ async def test_panel_memory_capped_at_max(
 
     assert len(panel_mod._panel_memories) == panel_mod.PANEL_MEMORY_MAX
     # Oldest entry evicted, newest is last
-    assert panel_mod._panel_memories[-1] == "Новый вывод."
-    assert panel_mod._panel_memories[0] == "memory 1"  # "memory 0" was evicted
+    assert panel_mod._panel_memories[-1]["text"] == "Новый вывод."
+    assert panel_mod._panel_memories[0]["text"] == "memory 1"  # "memory 0" was evicted
 
 
 async def test_memory_injected_into_next_round_context(
@@ -462,7 +466,7 @@ async def test_memory_injected_into_next_round_context(
     import claudebots.routers.panel as panel_mod
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 1)
-    monkeypatch.setattr("claudebots.routers.panel._panel_memories", ["Прошлый вывод: X важнее Y."])
+    monkeypatch.setattr("claudebots.routers.panel._panel_memories", [{"text": "Прошлый вывод: X важнее Y.", "topic": "Old", "ts": 0.0}])
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
     captured_messages: list = []
