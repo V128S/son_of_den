@@ -60,11 +60,19 @@ async def _session_guardian(bots: dict) -> None:
 
 async def amain() -> None:
     settings = Settings()
-    logging.basicConfig(
-        level=settings.log_level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        stream=sys.stdout,
-    )
+    _log_fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    _handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if settings.log_file:
+        from logging.handlers import RotatingFileHandler
+        _handlers.append(
+            RotatingFileHandler(
+                settings.log_file,
+                maxBytes=settings.log_max_bytes,
+                backupCount=settings.log_backup_count,
+                encoding="utf-8",
+            )
+        )
+    logging.basicConfig(level=settings.log_level, format=_log_fmt, handlers=_handlers)
 
     registry = load_personas(settings.personas_path)
     persona_holder = PersonaHolder(registry=registry)

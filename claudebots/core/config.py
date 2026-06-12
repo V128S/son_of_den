@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     user_timezone: str = "Europe/Moscow"
 
     log_level: str = "INFO"
+    # Log file path. Empty string = stdout only (Docker/systemd mode).
+    log_file: str = ""
+    # Rotating log: max size per file (bytes) and number of backup files.
+    log_max_bytes: int = 5 * 1024 * 1024   # 5 MB
+    log_backup_count: int = 3
     personas_path: Path = Path("personas.yaml")
 
     # File that persists topic mappings across restarts (prevents duplicate forum topics).

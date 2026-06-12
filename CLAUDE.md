@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (162 tests, e2e excluded by default)
+# Run all tests (177 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -71,7 +71,8 @@ Background tasks started at boot:
 | Module | Purpose |
 |---|---|
 | `insta_downloader.py` | `InstagramDownloader` — downloads public posts/Reels via yt-dlp. `detect_url(text)` extracts the first Instagram URL. Returns `list[MediaFile]` (photo/video/document). Handles carousels. Re-encodes video to H.264/AAC+faststart via ffmpeg for Telegram playback. |
-| `yt_downloader.py` | `YTDownloader` — downloads the best-quality audio from YouTube videos via yt-dlp. `detect_url(text)` matches `https://youtu.be/` and `https://youtube.com/watch?v=` (requires protocol; ignores Shorts, playlists, channels). Returns `AudioFile` with `send_as_audio` property (>50 MB → document). Cleans up tmpdir on all paths including errors. |
+| `yt_downloader.py` | `YTDownloader` — downloads the best-quality audio from YouTube videos via yt-dlp. `detect_url(text)` matches `https://youtu.be/` and `https://youtube.com/watch?v=` (requires protocol; ignores Shorts, playlists, channels). Returns `AudioFile` with `send_as_audio` property (>50 MB → document). Also has `fetch_transcript(url)` to download auto-subtitles (VTT) for video summarisation. `detect_summary_cmd(text)` matches "резюме/кратко/summary URL" prefix. |
+| `social_downloader.py` | `SocialDownloader` — downloads videos and photos from TikTok (`tiktok.com`, `vm.tiktok.com`) and X/Twitter (`twitter.com`, `x.com`) via yt-dlp. `detect_platform(text)` returns `(url, topic_name)` where topic_name is `"🎬 TikTok"` or `"🐦 X / Twitter"`. Reuses InstagramDownloader helpers for re-encode, classify, cleanup. |
 
 ### Routers (`claudebots/routers/`)
 
@@ -87,6 +88,7 @@ Background tasks started at boot:
 
 **`panel.py`** orchestrates the 5-bot discussion:
 - `PanelRoundRunner.run_round(topic)` — sequential round: each speaker responds in turn, then the moderator synthesises. Uses `_processing_lock` to ensure at most one active round at a time.
+- **Direct reply mode** — if the admin replies to a specific panel bot's message, only that bot responds (no full round). `_find_persona_for_bot_user_id()` maps `message.from_user.id` to a `(Bot, Persona)` pair by comparing against bot token prefixes.
 - Forum topics are created/reused per discussion category. `_panel_topics` (thread_id → name) and `_panel_memories` (up to 7 compact takeaways) are persisted in `bot_state.json`.
 - Revival scheduler picks a random past memory and re-opens it informally.
 
