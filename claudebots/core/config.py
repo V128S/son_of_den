@@ -71,11 +71,11 @@ class Settings(BaseSettings):
     obsidian_vault_path: str = ""
 
     # Google Sheets integration — personal price sheet where transferred rows land.
-    sheets_personal_id: str = "1AKD5vyhUgzxlA04p7W7c3ZrMscHEbeflsmtp6evB48w"
+    sheets_personal_id: str = ""
     # Markup percentage applied to prices when transferring from contact's sheet to yours.
     sheets_markup_percent: float = 20.0
 
     # Utility meter readings — Google Sheet ID for electricity/water/gas tracker.
     # Leave empty to disable meter readings integration.
-    meters_sheet_id: str = "1qjpD22uRWRLV2s7JK_wYx6vc9BCnQFVdo996CYorf5M"
+    meters_sheet_id: str = ""
 

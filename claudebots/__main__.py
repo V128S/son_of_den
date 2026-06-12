@@ -123,6 +123,7 @@ async def amain() -> None:
         logger.info("Gemini client disabled (GEMINI_API_KEY not set)")
 
     # Claude client (optional, with Groq fallback if available)
+    claude: ClaudeClient | None = None
     if settings.anthropic_api_key is not None:
         fallback = clients.get("groq")  # type: ignore[assignment]
         claude = ClaudeClient(settings, fallback=fallback)
@@ -168,9 +169,9 @@ async def amain() -> None:
     else:
         logger.info("Obsidian client disabled (OBSIDIAN_VAULT_PATH not set)")
 
-    # Google Sheets client (enabled when service account is configured)
+    # Google Sheets client (enabled when service account + personal sheet ID configured)
     sheets_client: GoogleSheetsClient | None = None
-    if settings.google_service_account_file:
+    if settings.google_service_account_file and settings.sheets_personal_id:
         sheets_client = GoogleSheetsClient(
             service_account_file=settings.google_service_account_file,
             personal_sheet_id=settings.sheets_personal_id,
@@ -182,7 +183,7 @@ async def amain() -> None:
             settings.sheets_markup_percent,
         )
     else:
-        logger.info("Google Sheets client disabled (GOOGLE_SERVICE_ACCOUNT_FILE not set)")
+        logger.info("Google Sheets client disabled (GOOGLE_SERVICE_ACCOUNT_FILE or SHEETS_PERSONAL_ID not set)")
 
     # Meter readings client (enabled when service account + meter sheet ID configured)
     meters_client: MetersClient | None = None
@@ -222,13 +223,8 @@ async def amain() -> None:
         insta_downloader=insta_downloader,
         yt_downloader=yt_downloader,
     )
-    # `claude` is only defined when ANTHROPIC_API_KEY is set
-    if "claude" in dir() or "claude" in vars():
-        pass  # handled below
-    try:
-        workflow["claude"] = claude  # type: ignore[name-defined]
-    except NameError:
-        pass
+    if claude is not None:
+        workflow["claude"] = claude
     dp.workflow_data.update(workflow)
 
     # Panel router must be first to handle panel messages before business router
