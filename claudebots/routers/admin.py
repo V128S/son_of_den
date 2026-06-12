@@ -63,22 +63,37 @@ async def handle_cost(message: Message, ai_registry: AIRegistry, settings: Setti
     if message.from_user is None or message.from_user.id != settings.admin_user_id:
         return
 
-    lines = ["\U0001f4ca Session tokens:\n"]
+    # \u2500\u2500 Today's usage \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    daily_by_provider = ai_registry.get_daily_usage_by_provider()
+    daily_total = ai_registry.get_daily_total_usage()
+    lines = ["\U0001f4ca \u0422\u043e\u043a\u0435\u043d\u044b \u0441\u0435\u0433\u043e\u0434\u043d\u044f:\n"]
+    for name, u in daily_by_provider.items():
+        if u["input"] == 0 and u["output"] == 0:
+            continue
+        lines.append(f"  {name}: in={u['input']}  out={u['output']}  cache={u['cache_read']}")
+
+    if daily_total["input"] == 0 and daily_total["output"] == 0:
+        lines.append("  (\u043d\u0435\u0442 \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u043d\u0438\u044f \u0441\u0435\u0433\u043e\u0434\u043d\u044f)")
+    else:
+        lines.append(f"\n  \u0414\u0435\u043d\u044c: in={daily_total['input']}  out={daily_total['output']}  cache={daily_total['cache_read']}")
+        d_in = daily_total["input"] / 1_000_000 * 3.0
+        d_out = daily_total["output"] / 1_000_000 * 15.0
+        lines.append(f"\u2248 ${d_in + d_out:.4f} \u0437\u0430 \u0434\u0435\u043d\u044c")
+
+    # \u2500\u2500 All-time usage \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     total = ai_registry.get_total_usage()
     by_provider = ai_registry.get_usage_by_provider()
-
+    lines.append("\n\U0001f4ca \u0412\u0441\u0435\u0433\u043e \u043d\u0430\u043a\u043e\u043f\u043b\u0435\u043d\u043e:\n")
     for name, u in by_provider.items():
         if u["input"] == 0 and u["output"] == 0:
             continue
         lines.append(f"  {name}: in={u['input']}  out={u['output']}  cache={u['cache_read']}")
 
-    lines.append(f"\n  TOTAL: in={total['input']}  out={total['output']}  cache={total['cache_read']}")
-
-    # Rough cost estimate (varies by model, this is indicative)
+    lines.append(f"\n  \u0418\u0422\u041e\u0413\u041e: in={total['input']}  out={total['output']}  cache={total['cache_read']}")
     in_cost = total["input"] / 1_000_000 * 3.0
     out_cost = total["output"] / 1_000_000 * 15.0
     cache_savings = total["cache_read"] / 1_000_000 * (3.0 - 0.30)
-    lines.append(f"\u2248 ${in_cost + out_cost:.4f} (cache saved \u2248 ${cache_savings:.4f})")
+    lines.append(f"\u2248 ${in_cost + out_cost:.4f} \u0432\u0441\u0435\u0433\u043e (\u043a\u044d\u0448 \u0441\u044d\u043a\u043e\u043d\u043e\u043c\u0438\u043b \u2248 ${cache_savings:.4f})")
 
     await message.answer("\n".join(lines))
 

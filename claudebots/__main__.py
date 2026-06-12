@@ -59,6 +59,17 @@ async def _session_guardian(bots: dict) -> None:
         await asyncio.to_thread(_seize_sessions_sync, bots)
 
 
+async def _daily_usage_resetter(ai_registry) -> None:
+    """Reset daily usage counters every UTC midnight."""
+    from datetime import datetime, timezone, timedelta
+    while True:
+        now = datetime.now(timezone.utc)
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
+        delay = (next_midnight - now).total_seconds()
+        await asyncio.sleep(delay)
+        ai_registry.reset_daily_usage()
+
+
 async def amain() -> None:
     settings = Settings()
     _log_fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -322,6 +333,10 @@ async def amain() -> None:
     # Start background guardian to maintain session dominance
     guardian_task = asyncio.create_task(_session_guardian(bots))
 
+    # Start daily usage reset task (resets at UTC midnight)
+    ai_registry.reset_daily_usage()  # initialise baseline for the current boot
+    daily_reset_task = asyncio.create_task(_daily_usage_resetter(ai_registry))
+
     # Start daily contact digest scheduler
     digest_task: asyncio.Task[None] | None = None
     if settings.contact_digest_time:
@@ -380,6 +395,11 @@ async def amain() -> None:
         guardian_task.cancel()
         try:
             await guardian_task
+        except asyncio.CancelledError:
+            pass
+        daily_reset_task.cancel()
+        try:
+            await daily_reset_task
         except asyncio.CancelledError:
             pass
         if revival_task is not None:

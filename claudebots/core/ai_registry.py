@@ -50,6 +50,9 @@ class AIRegistry:
 
     def __init__(self, clients: dict[str, AIClient]) -> None:
         self._clients = clients
+        # Snapshot of cumulative usage taken at the start of each UTC day.
+        # get_daily_usage() subtracts this baseline from the current counters.
+        self._day_baseline: dict[str, Usage] = {}
         logger.info("AIRegistry initialized with providers: %s", list(clients.keys()))
 
     def get_client(self, provider: str) -> AIClient:
@@ -112,3 +115,35 @@ class AIRegistry:
             u["input"] += int(saved.get("input", 0))
             u["output"] += int(saved.get("output", 0))
             u["cache_read"] += int(saved.get("cache_read", 0))
+
+    def reset_daily_usage(self) -> None:
+        """Snapshot current cumulative counters as the new daily baseline.
+
+        Call this once at midnight (UTC) to start a fresh daily window.
+        """
+        self._day_baseline = {
+            name: {"input": c.usage["input"], "output": c.usage["output"], "cache_read": c.usage["cache_read"]}
+            for name, c in self._clients.items()
+        }
+        logger.info("Daily usage counters reset")
+
+    def get_daily_usage_by_provider(self) -> dict[str, Usage]:
+        """Return token usage since the last call to reset_daily_usage()."""
+        result: dict[str, Usage] = {}
+        for name, client in self._clients.items():
+            base = self._day_baseline.get(name, {"input": 0, "output": 0, "cache_read": 0})
+            result[name] = {
+                "input": max(0, client.usage["input"] - base["input"]),
+                "output": max(0, client.usage["output"] - base["output"]),
+                "cache_read": max(0, client.usage["cache_read"] - base["cache_read"]),
+            }
+        return result
+
+    def get_daily_total_usage(self) -> Usage:
+        """Return combined daily token usage across all providers."""
+        total: Usage = {"input": 0, "output": 0, "cache_read": 0}
+        for u in self.get_daily_usage_by_provider().values():
+            total["input"] += u["input"]
+            total["output"] += u["output"]
+            total["cache_read"] += u["cache_read"]
+        return total

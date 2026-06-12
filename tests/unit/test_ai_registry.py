@@ -43,3 +43,45 @@ def test_restore_usage_missing_fields_default_to_zero():
     reg = AIRegistry({"a": ca})
     reg.restore_usage({"a": {}})
     assert ca.usage == {"input": 0, "output": 0, "cache_read": 0}
+
+
+def test_daily_usage_starts_at_zero_after_reset():
+    reg = AIRegistry({"a": _make_client(100, 200, 5)})
+    reg.reset_daily_usage()
+    daily = reg.get_daily_usage_by_provider()
+    assert daily["a"] == {"input": 0, "output": 0, "cache_read": 0}
+
+
+def test_daily_usage_tracks_new_usage_after_reset():
+    ca = _make_client(100, 200, 5)
+    reg = AIRegistry({"a": ca})
+    reg.reset_daily_usage()
+    # Simulate new usage added after reset
+    ca.usage["input"] += 30
+    ca.usage["output"] += 50
+    daily = reg.get_daily_usage_by_provider()
+    assert daily["a"]["input"] == 30
+    assert daily["a"]["output"] == 50
+
+
+def test_daily_total_sums_all_providers():
+    ca = _make_client()
+    cb = _make_client()
+    reg = AIRegistry({"a": ca, "b": cb})
+    reg.reset_daily_usage()
+    ca.usage["input"] += 10
+    cb.usage["output"] += 20
+    total = reg.get_daily_total_usage()
+    assert total["input"] == 10
+    assert total["output"] == 20
+
+
+def test_daily_usage_never_goes_negative():
+    """If baseline exceeds current (e.g. restore_usage ran after reset), floor at 0."""
+    ca = _make_client(50, 50, 0)
+    reg = AIRegistry({"a": ca})
+    reg.reset_daily_usage()
+    # Simulate a case where baseline > current (shouldn't happen in practice)
+    ca.usage["input"] = 30
+    daily = reg.get_daily_usage_by_provider()
+    assert daily["a"]["input"] == 0
