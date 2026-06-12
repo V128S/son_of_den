@@ -516,3 +516,52 @@ def test_build_digest_message_with_contacts(monkeypatch):
     # Ivan (3 msgs) should appear before Anna (1 msg)
     assert msg.index("Иван") < msg.index("Анна")
     assert "Итого" in msg
+
+
+# ---------------------------------------------------------------------------
+# Direct reply to panel bot
+# ---------------------------------------------------------------------------
+
+async def test_direct_reply_calls_specific_bot(personas, conv, ai_registry_mock, bot_mocks, alerts_mock):
+    """When admin replies to analyst bot, only analyst responds (no full round)."""
+    from claudebots.routers.panel import _find_persona_for_bot_user_id, _handle_direct_reply
+
+    # Build a mapping from bot name to synthetic user_id (token prefix)
+    # bot_mocks tokens are set up as "123:xxx" in conftest
+    analyst_bot = bot_mocks.get("analyst")
+    if analyst_bot is None:
+        pytest.skip("analyst bot not in bot_mocks")
+
+    # Find analyst persona via _find_persona_for_bot_user_id
+    analyst_token_uid = int(analyst_bot.token.split(":")[0])
+    result = _find_persona_for_bot_user_id(bot_mocks, personas, analyst_token_uid)
+    assert result is not None, "analyst should be found by token user_id"
+    found_bot, found_persona = result
+    assert found_persona.id == "analyst"
+
+    # Build a fake reply message
+    message = MagicMock()
+    message.chat.id = -1001
+    message.message_thread_id = 42
+    message.message_id = 999
+    message.text = "Уточни свою позицию по поводу инфляции"
+
+    await _handle_direct_reply(
+        message=message,
+        reply_bot=found_bot,
+        persona=found_persona,
+        ai_registry=ai_registry_mock,
+        conv=conv,
+        alerts=alerts_mock,
+    )
+
+    # The analyst bot should have sent exactly one message
+    found_bot.send_message.assert_awaited_once()
+    kwargs = found_bot.send_message.call_args.kwargs
+    assert kwargs["reply_to_message_id"] == 999
+
+
+async def test_find_persona_returns_none_for_unknown_user_id(personas, bot_mocks):
+    from claudebots.routers.panel import _find_persona_for_bot_user_id
+    result = _find_persona_for_bot_user_id(bot_mocks, personas, 99999999)
+    assert result is None

@@ -805,6 +805,83 @@ def start_reminder_checker(
     return task
 
 # ---------------------------------------------------------------------------
+# Direct-reply handler helpers
+# ---------------------------------------------------------------------------
+
+def _find_persona_for_bot_user_id(
+    bots: dict[str, "Bot"],
+    personas: "PersonaRegistry",
+    bot_user_id: int,
+) -> "tuple[Bot, Persona] | None":
+    """Return (bot, persona) if bot_user_id matches a panel bot, else None."""
+    from claudebots.core.personas import Persona
+    for bot_key, bot in bots.items():
+        if bot_key == "business":
+            continue
+        try:
+            token_uid = int(bot.token.split(":")[0])
+        except (ValueError, IndexError):
+            continue
+        if token_uid != bot_user_id:
+            continue
+        persona = next((p for p in personas.all_panel() if p.id == bot_key), None)
+        if persona:
+            return bot, persona
+    return None
+
+
+async def _handle_direct_reply(
+    message: "Message",
+    reply_bot: "Bot",
+    persona: "Persona",
+    ai_registry: "AIRegistry",
+    conv: "ConversationStore",
+    alerts: "AlertSender",
+) -> None:
+    """Admin replied to a panel bot — that bot responds directly."""
+    thread_id = message.message_thread_id or 0
+    key = f"panel:{message.chat.id}:{thread_id}"
+
+    user_text = message.text or message.caption or ""
+    conv.add(key, "user", user_text)
+
+    try:
+        await reply_bot.send_chat_action(
+            chat_id=message.chat.id, action="typing",
+            message_thread_id=message.message_thread_id,
+        )
+    except Exception:
+        pass
+
+    client = ai_registry.get_client(persona.provider)
+    try:
+        response = await client.complete(
+            system=persona.system_prompt,
+            messages=conv.get(key),
+            max_tokens=persona.max_tokens,
+        )
+        if not response or not response.strip():
+            response = persona.fallback
+    except Exception as e:
+        logger.warning("Direct reply failed (%s): %s", persona.provider, e)
+        await alerts.send("panel_direct", f"{persona.name}: {type(e).__name__}: {e}")
+        response = persona.fallback
+
+    try:
+        sent = await reply_bot.send_message(
+            chat_id=message.chat.id,
+            text=response,
+            message_thread_id=message.message_thread_id,
+            parse_mode=None,
+            reply_to_message_id=message.message_id,
+        )
+        conv.add(key, "assistant", response)
+        logger.info("Direct reply from %s (%s chars)", persona.name, len(response))
+    except Exception as e:
+        logger.warning("Direct reply send failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Panel message handler
 # ---------------------------------------------------------------------------
 
@@ -824,6 +901,27 @@ async def _on_panel_message(
         return
     if message.from_user.is_bot:
         return
+
+    # Direct reply: admin replied to a specific panel bot → that bot responds alone
+    if (
+        message.reply_to_message is not None
+        and message.reply_to_message.from_user is not None
+        and message.reply_to_message.from_user.is_bot
+    ):
+        found = _find_persona_for_bot_user_id(
+            bots, personas, message.reply_to_message.from_user.id
+        )
+        if found is not None:
+            reply_bot, reply_persona = found
+            await _handle_direct_reply(
+                message=message,
+                reply_bot=reply_bot,
+                persona=reply_persona,
+                ai_registry=ai_registry,
+                conv=conv,
+                alerts=alerts,
+            )
+            return
 
     global _active_round
 
