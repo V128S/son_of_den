@@ -84,3 +84,7 @@ class Settings(BaseSettings):
     # Leave empty to disable meter readings integration.
     meters_sheet_id: str = ""
 
+    # Morning briefing — AI-generated daily summary sent to admin each morning.
+    # Set to empty string to disable.
+    morning_briefing_time: str = "09:00"
+

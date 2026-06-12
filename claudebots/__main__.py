@@ -22,6 +22,7 @@ from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
 from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.routers.admin import PersonaHolder, admin_router
+from claudebots.routers.briefing import start_briefing_scheduler
 from claudebots.routers.business import business_router, init_business_state, start_digest_scheduler
 from claudebots.routers.panel import (
     init_panel_state,
@@ -337,6 +338,20 @@ async def amain() -> None:
         panel_chat_id=settings.panel_chat_id,
     )
 
+    # Start morning briefing scheduler
+    briefing_task: asyncio.Task[None] | None = None
+    if settings.morning_briefing_time:
+        briefing_task = start_briefing_scheduler(
+            bot=bots["business"],
+            admin_user_id=settings.admin_user_id,
+            timezone_str=settings.user_timezone,
+            briefing_time=settings.morning_briefing_time,
+            calendar_client=calendar_client,
+            ai_registry=ai_registry,
+        )
+    else:
+        logger.info("Morning briefing disabled (MORNING_BRIEFING_TIME not set)")
+
     # Start feed monitor (auto-topics from Telegram channel RSS)
     feed_task: asyncio.Task[None] | None = None
     feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
@@ -384,6 +399,12 @@ async def amain() -> None:
             await reminder_task
         except asyncio.CancelledError:
             pass
+        if briefing_task is not None:
+            briefing_task.cancel()
+            try:
+                await briefing_task
+            except asyncio.CancelledError:
+                pass
         if feed_task is not None:
             feed_task.cancel()
             try:
