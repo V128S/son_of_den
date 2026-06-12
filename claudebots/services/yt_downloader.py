@@ -5,7 +5,9 @@ Playlists and Shorts are intentionally not supported.
 
 Public API:
     detect_url(text)             -> str | None      — extract first YouTube video URL
+    detect_summary_cmd(text)     -> str | None      — extract YT URL from summary commands
     YTDownloader.download_audio(url) -> AudioFile | None
+    YTDownloader.fetch_transcript(url) -> str | None  — auto-subs as plain text
     YTDownloader.cleanup(file)   -> None
 """
 from __future__ import annotations
@@ -49,6 +51,21 @@ def detect_url(text: str) -> str | None:
     return None
 
 
+# Matches summary-request prefix: "резюме", "кратко", "саммари", "summary", "/summary"
+_SUMMARY_PREFIX_RE = _re.compile(
+    r"^(?:резюме|кратко|саммари|summary|/summary)\s+",
+    _re.IGNORECASE,
+)
+
+
+def detect_summary_cmd(text: str) -> str | None:
+    """Return YT URL if text is a summary request like 'резюме https://...', else None."""
+    if not _SUMMARY_PREFIX_RE.match(text.strip()):
+        return None
+    stripped = _SUMMARY_PREFIX_RE.sub("", text.strip(), count=1)
+    return detect_url(stripped)
+
+
 @dataclass
 class AudioFile:
     path: Path
@@ -75,6 +92,83 @@ class YTDownloader:
     # ------------------------------------------------------------------
     # Public async API
     # ------------------------------------------------------------------
+
+    async def fetch_transcript(self, url: str) -> str | None:
+        """Fetch auto-generated or manual subtitles for a YouTube video.
+
+        Returns plain text (stripped of VTT markup) or None if unavailable.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, self._fetch_subtitles_sync, url),
+                timeout=30.0,
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.debug("Subtitle fetch timed out: %s", url)
+            return None
+        except Exception as e:
+            logger.debug("Subtitle fetch failed: %s — %s", url, e)
+            return None
+
+    def _fetch_subtitles_sync(self, url: str) -> str | None:
+        """Sync subtitle download; runs in thread pool."""
+        tmpdir = tempfile.mkdtemp(prefix="yt_subs_")
+        ydl_opts = {
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["ru", "ru-RU", "en"],
+            "subtitlesformat": "vtt",
+            "skip_download": True,
+            "quiet": True,
+            "no_warnings": True,
+            "ignoreerrors": True,
+            "outtmpl": os.path.join(tmpdir, "%(id)s"),
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            logger.debug("yt-dlp subtitle download failed: %s", e)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return None
+
+        # Find any .vtt file
+        tmp = Path(tmpdir)
+        vtt_files = list(tmp.glob("*.vtt"))
+        if not vtt_files:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return None
+
+        # Prefer Russian, then any
+        chosen = next((f for f in vtt_files if ".ru" in f.name), vtt_files[0])
+        try:
+            raw = chosen.read_text(encoding="utf-8", errors="replace")
+            text = self._parse_vtt(raw)
+        except Exception:
+            text = None
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return text if text else None
+
+    @staticmethod
+    def _parse_vtt(raw: str) -> str:
+        """Strip VTT header/timestamps and HTML tags, deduplicate lines."""
+        import re as _re
+        lines = raw.splitlines()
+        seen: set[str] = set()
+        result: list[str] = []
+        for line in lines:
+            # Skip header, timing lines, and WEBVTT marker
+            if line.startswith("WEBVTT") or " --> " in line or not line.strip():
+                continue
+            # Strip HTML tags
+            clean = _re.sub(r"<[^>]+>", "", line).strip()
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            result.append(clean)
+        return " ".join(result)
 
     async def download_audio(self, url: str) -> AudioFile | None:
         """Download the best-quality audio from a YouTube video URL.

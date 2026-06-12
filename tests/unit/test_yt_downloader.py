@@ -185,3 +185,69 @@ class TestYTDownloaderCleanup:
         missing = tmp_path / "gone.m4a"
         f = AudioFile(path=missing, title="T", duration_s=0)
         YTDownloader.cleanup(f)  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# detect_summary_cmd
+# ---------------------------------------------------------------------------
+
+class TestDetectSummaryCmd:
+    def test_detects_rezume_prefix(self):
+        from claudebots.services.yt_downloader import detect_summary_cmd
+        result = detect_summary_cmd("резюме https://youtu.be/dQw4w9WgXcQ")
+        assert result is not None
+        assert "dQw4w9WgXcQ" in result
+
+    def test_detects_kratko_prefix(self):
+        from claudebots.services.yt_downloader import detect_summary_cmd
+        result = detect_summary_cmd("кратко https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        assert result is not None
+
+    def test_detects_summary_prefix(self):
+        from claudebots.services.yt_downloader import detect_summary_cmd
+        result = detect_summary_cmd("summary https://youtu.be/dQw4w9WgXcQ")
+        assert result is not None
+
+    def test_plain_yt_url_not_detected(self):
+        from claudebots.services.yt_downloader import detect_summary_cmd
+        result = detect_summary_cmd("https://youtu.be/dQw4w9WgXcQ")
+        assert result is None
+
+    def test_empty_text_returns_none(self):
+        from claudebots.services.yt_downloader import detect_summary_cmd
+        assert detect_summary_cmd("") is None
+
+
+# ---------------------------------------------------------------------------
+# YTDownloader._parse_vtt
+# ---------------------------------------------------------------------------
+
+class TestParseVtt:
+    def test_strips_header_and_timestamps(self):
+        raw = """WEBVTT
+Kind: captions
+Language: ru
+
+00:00:00.000 --> 00:00:02.000
+Привет мир
+
+00:00:02.000 --> 00:00:04.000
+как дела
+"""
+        result = YTDownloader._parse_vtt(raw)
+        assert "Привет мир" in result
+        assert "как дела" in result
+        assert "WEBVTT" not in result
+        assert "-->" not in result
+
+    def test_deduplicates_lines(self):
+        raw = """WEBVTT
+
+00:00:00.000 --> 00:00:01.000
+hello world
+
+00:00:01.000 --> 00:00:02.000
+hello world
+"""
+        result = YTDownloader._parse_vtt(raw)
+        assert result.count("hello world") == 1

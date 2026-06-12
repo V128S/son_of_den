@@ -22,7 +22,7 @@ from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
 from claudebots.core.meters_client import MetersClient, looks_like_meter_message, extract_meter_readings
 from claudebots.services.insta_downloader import InstagramDownloader, detect_url as _detect_insta_url
 from claudebots.services.social_downloader import SocialDownloader, detect_platform as _detect_social_platform
-from claudebots.services.yt_downloader import YTDownloader, detect_url as _detect_yt_url, AudioFile as _YTAudioFile
+from claudebots.services.yt_downloader import YTDownloader, detect_url as _detect_yt_url, detect_summary_cmd as _detect_yt_summary_cmd, AudioFile as _YTAudioFile
 
 logger = logging.getLogger(__name__)
 
@@ -1170,6 +1170,61 @@ async def handle_private_message(
                 insta_downloader.cleanup(_media_files)
             return
 
+    # ── YouTube summary (резюме / кратко / summary URL) ──────────────────────
+    if is_owner_mode and yt_downloader is not None:
+        _summary_url = _detect_yt_summary_cmd(text)
+        if _summary_url:
+            try:
+                await bot.send_chat_action(
+                    chat_id=message.chat.id, action="typing",
+                    message_thread_id=message.message_thread_id,
+                )
+            except Exception:
+                pass
+            placeholder_sm = None
+            try:
+                placeholder_sm = await bot.send_message(
+                    chat_id=message.chat.id,
+                    text="📝 Получаю субтитры…",
+                    message_thread_id=message.message_thread_id,
+                    parse_mode=None,
+                )
+            except Exception:
+                pass
+
+            transcript = await yt_downloader.fetch_transcript(_summary_url)
+            summary_reply: str
+            if not transcript:
+                summary_reply = "⚠️ Субтитры недоступны для этого видео. Попробуй скачать аудио и transcribe вручную."
+            else:
+                try:
+                    sm_client = ai_registry.get_client("openrouter_gemini")
+                    summary_reply = await sm_client.complete(
+                        system="Ты пишешь краткие резюме видео. Структурируй ответ: основная идея, ключевые тезисы (3-5 пунктов), вывод. Русский язык.",
+                        messages=[{"role": "user", "content": f"Субтитры видео:\n{transcript[:8000]}\n\nНапиши краткое резюме."}],
+                        max_tokens=800,
+                    )
+                except Exception as _se:
+                    logger.warning("YT summary AI failed: %s", _se)
+                    summary_reply = f"⚠️ Не удалось сгенерировать резюме: {_se}"
+
+            try:
+                if placeholder_sm:
+                    await bot.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=placeholder_sm.message_id,
+                        text=summary_reply,
+                        parse_mode=None,
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=message.chat.id, text=summary_reply,
+                        message_thread_id=message.message_thread_id, parse_mode=None,
+                    )
+            except Exception as _pe:
+                logger.debug("Summary reply send failed: %s", _pe)
+            return
+
     # ── YouTube audio extraction ──────────────────────────────────────────────
     if is_owner_mode and yt_downloader is not None:
         _yt_url = _detect_yt_url(text)
@@ -1501,6 +1556,11 @@ _HELP_TEXT = """🤖 *Справка — возможности бота*
 Пример: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`
 
 Shorts и плейлисты не поддерживаются — только обычные видео.
+
+Чтобы получить *текстовое резюме* видео вместо аудио — добавь перед ссылкой слово `резюме`, `кратко` или `summary`:
+`резюме https://youtu.be/dQw4w9WgXcQ`
+
+Бот скачает субтитры (если доступны) и пришлёт краткое AI-резюме с ключевыми тезисами.
 
 ━━━━━━━━━━━━━━━━━━━━━
 🎬 *TikTok и 🐦 X / Twitter — скачать видео*
