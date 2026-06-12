@@ -90,6 +90,7 @@ def ai_registry_mock() -> AIRegistry:
         "groq": client,
         "openrouter_deepseek": client,
         "openrouter_owl": client,
+        "openrouter_gemini": client,
         "gemini": client,
     }
     return AIRegistry(clients)

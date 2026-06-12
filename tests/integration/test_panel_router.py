@@ -8,7 +8,8 @@ from claudebots.routers.panel import PanelRoundRunner
 async def test_full_round_calls_each_persona_in_order(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
+    monkeypatch.setattr("claudebots.routers.panel._SHUFFLE_SPEAKERS", False)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -39,7 +40,7 @@ async def test_full_round_calls_each_persona_in_order(
 
 
 async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -60,7 +61,8 @@ async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_
 
 
 async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
+    monkeypatch.setattr("claudebots.routers.panel._SHUFFLE_SPEAKERS", False)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -84,7 +86,8 @@ async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, 
 
 async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks, alerts_mock, monkeypatch):
     from claudebots.core.ai_registry import AIRegistry
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
+    monkeypatch.setattr("claudebots.routers.panel._SHUFFLE_SPEAKERS", False)
 
     client = MagicMock()
     side_effects = [
@@ -124,7 +127,7 @@ async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks
 
 async def test_moderator_failure_sends_fallback(personas, conv, bot_mocks, alerts_mock, monkeypatch):
     from claudebots.core.ai_registry import AIRegistry
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 4)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
 
     client = MagicMock()
     side_effects = ["ok1", "ok2", "ok3", "ok4", RuntimeError("mod fail")]
@@ -303,7 +306,7 @@ async def test_action_items_posted_to_tasks_thread(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
     monkeypatch.setattr("claudebots.routers.panel._panel_topics", {})
 
@@ -354,7 +357,7 @@ async def test_no_action_items_when_ai_says_net(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
     client = MagicMock()
@@ -391,7 +394,7 @@ async def test_panel_memory_saved_after_round(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", [])
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
@@ -424,7 +427,7 @@ async def test_panel_memory_capped_at_max(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 2)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     # Pre-fill with PANEL_MEMORY_MAX entries
     initial = [f"memory {i}" for i in range(panel_mod.PANEL_MEMORY_MAX)]
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", list(initial))
@@ -458,7 +461,7 @@ async def test_memory_injected_into_next_round_context(
     from claudebots.core.ai_registry import AIRegistry
     import claudebots.routers.panel as panel_mod
 
-    monkeypatch.setattr("claudebots.routers.panel.MAX_DISCUSSION_MESSAGES", 1)
+    monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 1)
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", ["Прошлый вывод: X важнее Y."])
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 

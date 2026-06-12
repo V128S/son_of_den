@@ -33,16 +33,29 @@ _last_thread_id: int | None = None
 _state_path: Path | None = None
 
 # Discussion settings
-MAX_DISCUSSION_MESSAGES = 4  # shorter discussions, more focused
+# Participant selection — patchable for tests.
+# _PARTICIPANT_COUNT = None  →  random each round (1–4, weighted)
+# _PARTICIPANT_COUNT = N     →  always exactly N speakers (used by integration tests)
+_PARTICIPANT_COUNT: int | None = None
+
+# Speaker ordering — patchable for tests.
+# True  →  shuffle order each round (production)
+# False →  keep the YAML order (integration tests that assert specific sequence)
+_SHUFFLE_SPEAKERS: bool = True
 
 # Human-realistic timing — simulates reading, thinking, and composing time.
+# Each inter-message gap is split into two phases:
+#   1. SILENT_DELAY — pure silence, the "reader" is absorbing the previous message.
+#   2. TYPING_DELAY — "typing..." indicator stays visible (refreshed every 4 s so
+#      Telegram never auto-clears it). This phase starts just before the message
+#      is sent, giving a natural composing feel.
 # Tests zero these via the integration conftest autouse fixture.
-REPLY_DELAY_MIN: float = 15.0    # seconds between speakers (min)
-REPLY_DELAY_MAX: float = 35.0    # seconds between speakers (max)
-REVIVAL_DELAY_MIN: float = 30.0  # seconds for revival continuation (min)
-REVIVAL_DELAY_MAX: float = 70.0  # seconds for revival continuation (max)
-TYPING_DELAY_MIN: float = 2.0    # seconds of visible typing indicator (min)
-TYPING_DELAY_MAX: float = 4.5    # seconds of visible typing indicator (max)
+SILENT_DELAY_MIN: float = 10.0   # silent reading time before next speaker starts (s)
+SILENT_DELAY_MAX: float = 22.0   # —
+TYPING_DELAY_MIN: float = 5.0    # composing time — typing indicator visible (s)
+TYPING_DELAY_MAX: float = 12.0   # —
+REVIVAL_DELAY_MIN: float = 20.0  # seconds for revival continuation (min)
+REVIVAL_DELAY_MAX: float = 50.0  # seconds for revival continuation (max)
 
 # Revival settings
 REVIVAL_INTERVAL_SECONDS = 7_200  # Default: every 2 hours
@@ -61,8 +74,9 @@ _tasks_thread_id: int | None = None
 
 # Instruction appended to every speaker turn — extracted to avoid repetition
 _SPEAKER_TURN_INSTRUCTION = (
-    "{name}, твой ход — 2-3 предложения живым языком.\n"
-    "Реагируй на то, что сказали другие: развивай, уточняй или мягко возражай. "
+    "{name}, выскажи своё мнение — 2-3 предложения, живым языком. "
+    "Говори от себя, как независимый наблюдатель. "
+    "Не нужно соглашаться со всеми — у тебя свой взгляд. "
     "Без заголовков и маркированных списков."
 )
 
@@ -74,8 +88,8 @@ _REVIVAL_INITIATOR_INSTRUCTION = (
 )
 
 _REVIVAL_RESPONDER_INSTRUCTION = (
-    "{name}, ты слышишь мысль коллеги и реагируешь — поддерживаешь или уточняешь. "
-    "1-2 предложения, по делу. Без markdown."
+    "{name}, видишь что написали — и у тебя есть своя реакция. "
+    "1-2 предложения, по делу, от себя. Без markdown."
 )
 
 
@@ -259,17 +273,27 @@ class PanelRoundRunner:
         return f"panel:{self.panel_chat_id}"
 
     async def _send(self, bot: Bot, text: str) -> None:
-        """Send message with a typing indicator to simulate composing a response."""
+        """Send message with a sustained typing indicator.
+
+        Refreshes send_chat_action every 4 s so Telegram keeps showing "typing…"
+        for the full composing window (TYPING_DELAY_MIN … TYPING_DELAY_MAX seconds).
+        """
         logger.debug("_send: chat=%s thread=%s len=%d", self.panel_chat_id, self.thread_id, len(text))
-        try:
-            await bot.send_chat_action(
-                chat_id=self.panel_chat_id,
-                action="typing",
-                message_thread_id=self.thread_id,
-            )
-            await asyncio.sleep(random.uniform(TYPING_DELAY_MIN, TYPING_DELAY_MAX))
-        except Exception:
-            pass  # typing indicator failure must not block the actual message
+        compose_seconds = random.uniform(TYPING_DELAY_MIN, TYPING_DELAY_MAX)
+        deadline = asyncio.get_event_loop().time() + compose_seconds
+        while True:
+            try:
+                await bot.send_chat_action(
+                    chat_id=self.panel_chat_id,
+                    action="typing",
+                    message_thread_id=self.thread_id,
+                )
+            except Exception:
+                pass  # typing-action failure must not block the message
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(4.0, remaining))
         await bot.send_message(
             self.panel_chat_id,
             text,
@@ -279,6 +303,16 @@ class PanelRoundRunner:
     async def _speak(self, persona, key: str) -> bool:
         """Have a persona speak. Returns True if successful."""
         speaker_bot = self.bots[persona.id]
+
+        # Show typing before the AI call so the user sees activity immediately.
+        try:
+            await speaker_bot.send_chat_action(
+                chat_id=self.panel_chat_id,
+                action="typing",
+                message_thread_id=self.thread_id,
+            )
+        except Exception:
+            pass
 
         # Build messages with explicit instruction to respond
         messages = list(self.conv.get(key))
@@ -315,6 +349,16 @@ class PanelRoundRunner:
         """Have a persona deliver a short revival message. Returns True if successful."""
         speaker_bot = self.bots[persona.id]
 
+        # Show typing before AI call so the user sees someone is about to write.
+        try:
+            await speaker_bot.send_chat_action(
+                chat_id=self.panel_chat_id,
+                action="typing",
+                message_thread_id=self.thread_id,
+            )
+        except Exception:
+            pass
+
         messages = list(self.conv.get(key))
         messages.append({"role": "user", "content": instruction.format(name=persona.name)})
 
@@ -350,67 +394,68 @@ class PanelRoundRunner:
         # Keep conversation history, just add new topic
         # This allows bots to reference previous discussions
 
-        # Prepend panel memory so speakers know conclusions from past rounds
+        # Prepend panel memory so speakers have context from past rounds
         memory_block = ""
         if _panel_memories:
-            memory_block = "🧠 Память команды (выводы прошлых обсуждений):\n"
+            memory_block = "🧠 Контекст прошлых обсуждений:\n"
             memory_block += "\n".join(f"• {m}" for m in _panel_memories[-5:])
             memory_block += "\n\n"
 
         discussion_context = (
             memory_block +
-            f"Новое сообщение от пользователя: {topic}\n\n"
-            "Правила дискуссии:\n"
-            "- Отвечай на вопрос с учётом предыдущего контекста\n"
-            "- СТРОЙ на идеях других, развивай их мысли\n"
-            "- Спорь только если реально видишь серьёзную ошибку\n"
-            "- Добавляй что-то новое и конкретное к обсуждению\n"
-            "- Будь конструктивен, предлагай решения\n"
-            "- Пиши живым языком, коротко и по делу"
+            f"Тема: {topic}\n\n"
+            "- Выскажи своё мнение — прямо и от себя\n"
+            "- Ты независимый наблюдатель, а не часть команды\n"
+            "- Не нужно обязательно отвечать другим — главное твой взгляд\n"
+            "- Пиши коротко, живым языком, без markdown"
         )
         self.conv.add(key, "user", discussion_context)
 
-        # Keep only last 50 messages to avoid context overflow
-        # This preserves ~2-3 rounds of discussion
-        self.conv.trim(key, keep_last=50)
+        # Keep only last 40 messages to avoid context overflow
+        # Matches ConversationStore maxlen=40; preserves ~2-3 rounds of discussion
+        self.conv.trim(key, keep_last=40)
 
         moderator_bot = self.bots["moderator"]
         await self._send(moderator_bot, f"🎬 Раунд: {topic}\n\n💬 Дискуссия...")
 
-        speakers = list(self.personas.panel_speakers)
-        message_count = 0
-        speaker_idx = 0
-        consecutive_failures = 0
+        # Build speaker pool — shuffle in production, keep YAML order when tests force it.
+        all_speakers = list(self.personas.panel_speakers)
+        if _SHUFFLE_SPEAKERS:
+            random.shuffle(all_speakers)
 
-        # Discussion loop
-        while message_count < MAX_DISCUSSION_MESSAGES:
-            persona = speakers[speaker_idx % len(speakers)]
+        # Pick how many speakers join: random (production) or forced (tests).
+        # Weights: 1 ~11%, 2 ~33%, 3 ~33%, 4 ~22%
+        if _PARTICIPANT_COUNT is not None:
+            n = min(_PARTICIPANT_COUNT, len(all_speakers))
+        else:
+            n = random.choices(
+                [1, 2, 3, len(all_speakers)],
+                weights=[1, 3, 3, 2],
+            )[0]
+        active = all_speakers[:n]
+        logger.info("Round participants (%d/%d): %s", n, len(all_speakers), [p.id for p in active])
+
+        sent = 0
+        for i, persona in enumerate(active):
+            # Silent reading pause before every speaker except the first.
+            if i > 0:
+                silent = random.uniform(SILENT_DELAY_MIN, SILENT_DELAY_MAX)
+                logger.debug("Silent pause %.0f s before %s speaks", silent, persona.id)
+                await asyncio.sleep(silent)
 
             success = await self._speak(persona, key)
             if success:
-                message_count += 1
-                consecutive_failures = 0
-                logger.info("Discussion message %d/%d from %s", message_count, MAX_DISCUSSION_MESSAGES, persona.id)
-
-                # Human-like pause — next speaker reads and thinks before replying
-                if message_count < MAX_DISCUSSION_MESSAGES:
-                    delay = random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX)
-                    logger.debug("Discussion: waiting %.0f s before next speaker", delay)
-                    await asyncio.sleep(delay)
+                sent += 1
+                logger.info("Discussion message %d/%d from %s", sent, n, persona.id)
             else:
-                consecutive_failures += 1
-                if consecutive_failures >= len(speakers):
-                    logger.warning("Too many consecutive failures, ending discussion early")
-                    break
+                logger.warning("Persona %s failed, skipping", persona.id)
 
-            speaker_idx += 1
-
-        # Moderator summary
+        # Moderator summary — silent pause then moderator shows typing via _send.
         mod = self.personas.moderator
         if mod is None:
             return
 
-        await asyncio.sleep(random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX))
+        await asyncio.sleep(random.uniform(SILENT_DELAY_MIN, SILENT_DELAY_MAX))
 
         try:
             mod_client = self.ai_registry.get_client(mod.provider)

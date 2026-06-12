@@ -10,8 +10,8 @@ import pytest
 def zero_panel_delays(monkeypatch):
     """Patch every delay constant in the panel router to 0."""
     for attr in (
-        "REPLY_DELAY_MIN",
-        "REPLY_DELAY_MAX",
+        "SILENT_DELAY_MIN",
+        "SILENT_DELAY_MAX",
         "REVIVAL_DELAY_MIN",
         "REVIVAL_DELAY_MAX",
         "TYPING_DELAY_MIN",

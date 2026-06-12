@@ -432,13 +432,6 @@ async def _on_private_message(
     if message.business_connection_id:
         return
 
-    # /help — highest priority, before everything else
-    if message.from_user and message.from_user.id == settings.admin_user_id:
-        t = (message.text or "").strip().lower()
-        if t in ("/help", "help") or t.startswith("/help ") or t.startswith("help "):
-            await message.answer(_HELP_TEXT, parse_mode="Markdown")
-            return
-
     await handle_private_message(
         message=message,
         bot=bot,
@@ -1390,6 +1383,7 @@ async def handle_private_message(
         await alerts.send("private_placeholder", f"{type(e).__name__}: {e}")
         return
 
+    _TG_MAX = 4096
     buffer = ""
     last_edit_at = now()
     streaming_failed = False
@@ -1400,7 +1394,10 @@ async def handle_private_message(
             messages=conv.get(key),
             max_tokens=persona.max_tokens,
         ):
-            buffer += delta
+            remaining = _TG_MAX - len(buffer)
+            if remaining <= 0:
+                break  # already at telegram limit
+            buffer += delta[:remaining]
             if now() - last_edit_at >= edit_throttle_seconds and buffer:
                 try:
                     await bot.edit_message_text(
@@ -1526,7 +1523,7 @@ def _is_help_cmd(text: str | None) -> bool:
 
 @business_router.message(
     F.text.func(_is_help_cmd),
-    F.chat.type == "private",
+    F.chat.type.in_({"private", "supergroup"}),
 )
 async def _on_help(message: Message, settings) -> None:
     if not message.from_user or message.from_user.id != settings.admin_user_id:
