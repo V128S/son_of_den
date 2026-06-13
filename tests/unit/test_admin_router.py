@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from claudebots.routers.admin import handle_cost, handle_ping, handle_reset
+import claudebots.routers.panel as panel_mod
 
 
 def _make_message(user_id: int = 42, chat_id: int = 42, text: str = "/ping") -> MagicMock:
@@ -45,6 +46,53 @@ async def test_reset_clears_private_conv_key(conv):
     await handle_reset(msg, conv, _make_settings(admin_id=42))
     assert conv.get("private:42:0") == []
     msg.answer.assert_awaited_once()
+
+
+async def test_panelfind_returns_no_results_for_missing_query():
+    from claudebots.routers.admin import _panelfind
+
+    panel_mod._panel_memories.clear()
+    panel_mod._panel_memories.append({"text": "О криптовалюте и биткоине", "topic": "Крипто", "ts": 1.0})
+
+    msg = _make_message(user_id=42, text="/panelfind квантовый")
+    msg.text = "/panelfind квантовый"
+    await _panelfind(msg, _make_settings(admin_id=42))
+    reply = msg.answer.call_args[0][0]
+    assert "Ничего не найдено" in reply
+
+
+async def test_panelfind_returns_hits():
+    from claudebots.routers.admin import _panelfind
+
+    panel_mod._panel_memories.clear()
+    panel_mod._panel_memories.append({"text": "Биткоин вырастет до миллиона", "topic": "Крипто", "ts": 1.0})
+    panel_mod._panel_memories.append({"text": "Квантовые компьютеры угрожают безопасности", "topic": "Технологии", "ts": 2.0})
+
+    msg = _make_message(user_id=42, text="/panelfind биткоин")
+    msg.text = "/panelfind биткоин"
+    await _panelfind(msg, _make_settings(admin_id=42))
+    reply = msg.answer.call_args[0][0]
+    assert "1" in reply
+    assert "Биткоин" in reply or "биткоин" in reply.lower()
+
+
+async def test_panelfind_non_admin_ignored():
+    from claudebots.routers.admin import _panelfind
+
+    msg = _make_message(user_id=999, text="/panelfind что-то")
+    msg.text = "/panelfind что-то"
+    await _panelfind(msg, _make_settings(admin_id=42))
+    msg.answer.assert_not_awaited()
+
+
+async def test_panelfind_empty_query_shows_usage():
+    from claudebots.routers.admin import _panelfind
+
+    msg = _make_message(user_id=42, text="/panelfind")
+    msg.text = "/panelfind"
+    await _panelfind(msg, _make_settings(admin_id=42))
+    reply = msg.answer.call_args[0][0]
+    assert "Использование" in reply
 
 
 async def test_cost_shows_daily_and_alltime():

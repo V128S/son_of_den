@@ -130,6 +130,34 @@ async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) 
     await message.answer("\n".join(lines), parse_mode=None)
 
 
+@admin_router.message(Command("panelfind"))
+async def _panelfind(message: Message, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.panel import _panel_memories  # noqa: PLC0415
+
+    query = (message.text or "").removeprefix("/panelfind").strip().lower()
+    if not query:
+        await message.answer("Использование: /panelfind <ключевое слово>", parse_mode=None)
+        return
+
+    hits = [
+        m for m in _panel_memories
+        if query in m.get("text", "").lower() or query in m.get("topic", "").lower()
+    ]
+    if not hits:
+        await message.answer(f"Ничего не найдено по запросу «{query}».", parse_mode=None)
+        return
+
+    lines = [f"🔍 Найдено {len(hits)} запис(ей) по «{query}»:\n"]
+    for m in reversed(hits[-10:]):  # показываем последние 10 совпадений, новые сверху
+        topic = m.get("topic") or "—"
+        snippet = m.get("text", "")[:200].replace("\n", " ")
+        lines.append(f"[{topic}] {snippet}")
+        lines.append("")
+    await message.answer("\n".join(lines), parse_mode=None)
+
+
 @admin_router.message(Command("reload"))
 async def _reload(message: Message, persona_holder: PersonaHolder, settings: Settings) -> None:
     await handle_reload(message, persona_holder, settings)

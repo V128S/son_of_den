@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (233 tests, e2e excluded by default)
+# Run all tests (237 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -104,7 +104,7 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 - Uses the cheapest available provider (`openrouter_gemini` → `groq` → `claude`)
 - Survives calendar API failure gracefully
 
-**`admin.py`** — `/ping`, `/reset`, `/cost`, `/reload`, `/contacts`, `/stats` commands. `PersonaHolder` wraps `PersonaRegistry` so `/reload` can swap the registry in-place. `/contacts` prints a summary of all known contacts (calls `get_contacts_summary()` from `business.py`). `/stats` shows contact count, active today, panel topic/memory counts, and daily+total token usage.
+**`admin.py`** — `/ping`, `/reset`, `/cost`, `/reload`, `/contacts`, `/stats`, `/panelfind` commands. `PersonaHolder` wraps `PersonaRegistry` so `/reload` can swap the registry in-place. `/contacts` prints a summary of all known contacts (calls `get_contacts_summary()` from `business.py`). `/stats` shows contact count, active today, panel topic/memory counts, and daily+total token usage. `/panelfind <query>` searches panel memories by text or topic name (case-insensitive, returns last 10 hits).
 
 ### Persona system (`personas.yaml`)
 
