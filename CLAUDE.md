@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (209 tests, e2e excluded by default)
+# Run all tests (229 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
