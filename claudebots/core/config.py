@@ -92,3 +92,7 @@ class Settings(BaseSettings):
     # Leave empty to disable web search (panel works without it).
     exa_api_key: SecretStr | None = None
 
+    # Daily token cost alert threshold in USD. Set to 0.0 to disable.
+    # When daily estimated cost exceeds this, the admin gets a one-time Telegram alert.
+    daily_cost_alert_usd: float = 0.0
+

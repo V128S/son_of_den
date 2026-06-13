@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (237 tests, e2e excluded by default)
+# Run all tests (240 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -48,6 +48,7 @@ Background tasks started at boot:
 - **Daily digest scheduler** — sends a contact summary to the admin at `CONTACT_DIGEST_TIME`
 - **Morning briefing scheduler** — sends an AI-generated daily briefing (calendar + panel memories + AI summary) at `MORNING_BRIEFING_TIME` (default 09:00)
 - **Daily usage resetter** — resets per-provider daily token counters at UTC midnight
+- **Budget monitor** — checks estimated daily cost every hour; sends admin alert once per day if `DAILY_COST_ALERT_USD` is exceeded (0 = disabled)
 - **Feed monitor** — polls Telegram channel RSS and auto-triggers panel rounds for scored posts
 
 On graceful shutdown, conversation history and usage counters are saved to `bot_state.json` and restored on the next startup. The daily usage window resets at UTC midnight; `/cost` shows both today's and all-time usage.

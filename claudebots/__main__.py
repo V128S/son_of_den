@@ -71,6 +71,34 @@ async def _daily_usage_resetter(ai_registry) -> None:
         ai_registry.reset_daily_usage()
 
 
+async def _budget_monitor(ai_registry, bot, admin_user_id: int, budget_usd: float) -> None:
+    """Check daily token cost every hour; send one alert per day if over budget."""
+    from datetime import UTC, date, datetime
+    last_alert_date: "date | None" = None
+    while True:
+        await asyncio.sleep(3600)
+        today = datetime.now(UTC).date()
+        if last_alert_date == today:
+            continue
+        daily = ai_registry.get_daily_total_usage()
+        # Approximate cost using Sonnet 4.6 pricing (mixed providers — best-effort estimate)
+        cost = daily["input"] / 1_000_000 * 3.0 + daily["output"] / 1_000_000 * 15.0
+        if cost >= budget_usd:
+            try:
+                await bot.send_message(
+                    chat_id=admin_user_id,
+                    text=(
+                        f"💸 Дневной бюджет превышен!\n"
+                        f"≈ ${cost:.4f} / лимит: ${budget_usd:.2f}\n"
+                        f"in={daily['input']:,}  out={daily['output']:,}"
+                    ),
+                )
+                last_alert_date = today
+                logger.warning("Budget alert sent: cost=%.4f limit=%.2f", cost, budget_usd)
+            except Exception as e:
+                logger.warning("Budget alert send failed: %s", e)
+
+
 async def amain() -> None:
     settings = Settings()
     _log_fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -419,6 +447,16 @@ async def amain() -> None:
     else:
         logger.info("Feed monitor disabled (FEED_CHANNELS not set)")
 
+    # Start daily token budget monitor (alerts admin when daily cost exceeds threshold)
+    budget_task: asyncio.Task[None] | None = None
+    if settings.daily_cost_alert_usd > 0:
+        budget_task = asyncio.create_task(
+            _budget_monitor(ai_registry, bots["business"], settings.admin_user_id, settings.daily_cost_alert_usd)
+        )
+        logger.info("Budget monitor enabled (limit=%.2f USD/day)", settings.daily_cost_alert_usd)
+    else:
+        logger.info("Budget monitor disabled (DAILY_COST_ALERT_USD not set or 0)")
+
     try:
         await dp.start_polling(*bots.values())
     finally:
@@ -459,6 +497,12 @@ async def amain() -> None:
             feed_task.cancel()
             try:
                 await feed_task
+            except asyncio.CancelledError:
+                pass
+        if budget_task is not None:
+            budget_task.cancel()
+            try:
+                await budget_task
             except asyncio.CancelledError:
                 pass
 
