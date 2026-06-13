@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (195 tests, e2e excluded by default)
+# Run all tests (209 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -57,7 +57,7 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 | Module | Purpose |
 |---|---|
 | `config.py` | `Settings` (pydantic-settings from `.env`). Single source of truth for all env vars. |
-| `ai_registry.py` | `AIRegistry` — maps provider name strings (`"claude"`, `"groq"`, `"openrouter_deepseek"`, etc.) to `AIClient` instances. All clients satisfy the `AIClient` Protocol: `complete()` + `stream()` + `usage`. Tracks both cumulative and daily usage; `reset_daily_usage()` / `get_daily_usage_by_provider()` for the daily window. `snapshot_usage()` / `restore_usage()` for cross-restart persistence. |
+| `ai_registry.py` | `AIRegistry` — maps provider name strings (`"claude"`, `"groq"`, `"openrouter_deepseek"`, etc.) to `AIClient` instances. All clients satisfy the `AIClient` Protocol: `complete()` + `stream()` + `usage`. Tracks both cumulative and daily usage; `reset_daily_usage()` / `get_daily_usage_by_provider()` for the daily window. `snapshot_usage()` / `restore_usage()` for cross-restart persistence. `FallbackClient` wraps two clients — tries primary, silently falls back on any exception. |
 | `claude_client.py` | Wraps Anthropic SDK. Uses prompt caching (`cache_control: ephemeral` on system blocks). Has `CircuitBreaker` built in; falls back to Groq on open. |
 | `circuit_breaker.py` | Sliding-window failure counter. `CLOSED → OPEN` after N failures in window; `OPEN → HALF_OPEN` after recovery period; `HALF_OPEN → CLOSED` on success. |
 | `conversation.py` | `ConversationStore` — per-key ring buffer (deque with `maxlen=40`). Keys are namespaced strings like `"biz:{conn_id}:{chat_id}"` or `"private:{chat_id}:{thread_id}"`. `snapshot()` / `restore()` for cross-restart persistence. |
@@ -69,6 +69,7 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 | `sheets_client.py` | `GoogleSheetsClient` — reads a contact's Google Sheet price list and transfers rows (with markup) to the owner's personal sheet. Enabled when `GOOGLE_SERVICE_ACCOUNT_FILE` and `SHEETS_PERSONAL_ID` are both set. |
 | `meters_client.py` | `MetersClient` — parses free-text meter readings (gas/water/electricity) via AI and appends them to a Google Sheet. Enabled when `METERS_SHEET_ID` is set. |
 | `feed_monitor.py` | Polls `rsshub.app/telegram/channel/<slug>` (Atom); falls back to `t.me/s/<slug>` scraping on 403. Scores entries with the cheapest available AI; fires `PanelRoundRunner` when score ≥ `FEED_MIN_SCORE`. |
+| `search_client.py` | `SearchClient` — async Exa API wrapper for web search enrichment. `search(query, num_results=3)` returns `list[SearchResult]`; disabled when `EXA_API_KEY` is not set. `format_results()` renders a compact block injected into panel context. |
 
 ### Services (`claudebots/services/`)
 
@@ -102,7 +103,7 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 - Uses the cheapest available provider (`openrouter_gemini` → `groq` → `claude`)
 - Survives calendar API failure gracefully
 
-**`admin.py`** — `/ping`, `/reset`, `/cost`, `/reload` commands. `PersonaHolder` wraps `PersonaRegistry` so `/reload` can swap the registry in-place.
+**`admin.py`** — `/ping`, `/reset`, `/cost`, `/reload`, `/contacts`, `/stats` commands. `PersonaHolder` wraps `PersonaRegistry` so `/reload` can swap the registry in-place. `/contacts` prints a summary of all known contacts (calls `get_contacts_summary()` from `business.py`). `/stats` shows contact count, active today, panel topic/memory counts, and daily+total token usage.
 
 ### Persona system (`personas.yaml`)
 

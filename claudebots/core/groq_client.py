@@ -80,9 +80,9 @@ class GroqClient:
         max_tokens: int = 1024,
     ) -> AsyncIterator[str]:
         """Yield text deltas."""
-        stream = await self._sdk.chat.completions.create(
+        stream = await self._sdk.chat.completions.create(  # type: ignore[call-overload]
             model=self._model,
-            messages=self._to_groq_messages(system, messages),  # type: ignore[arg-type]
+            messages=self._to_groq_messages(system, messages),
             max_tokens=max_tokens,
             stream=True,
             stream_options={"include_usage": True},
