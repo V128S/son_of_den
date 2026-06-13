@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -60,7 +60,7 @@ def _parse_timestamp(ts_str: str) -> float:
         return 0.0
 
 
-def _first_el(entry: ET.Element, *paths: tuple) -> ET.Element | None:
+def _first_el(entry: ET.Element, *paths: tuple[str, dict[str, str] | None]) -> ET.Element | None:
     """Return first non-None element found by the given (path, namespaces) pairs."""
     for path, ns in paths:
         el = entry.find(path, ns) if ns else entry.find(path)
@@ -186,12 +186,12 @@ class FeedMonitor:
         state_path: Path,
         ai_registry: AIRegistry,
         scoring_provider: str,
-        bots: dict,
+        bots: dict[str, Any],
         personas: PersonaRegistry,
         conv: ConversationStore,
         alerts: AlertSender,
         panel_chat_id: int,
-        search_client=None,
+        search_client: Any = None,
     ) -> None:
         self._channels = channels
         self._interests = interests
@@ -250,7 +250,7 @@ class FeedMonitor:
                     if score > best_score:
                         best_score, best_url, best_title, best_text = score, url, title, text
 
-        if best_url is None or best_score < self._min_score:
+        if best_url is None or best_title is None or best_text is None or best_score < self._min_score:
             logger.debug("Feed monitor: no worthy entry found (best_score=%d)", best_score)
             # Still update run timestamp so we don't hammer on every call
             _state.update(self._state_path, {
@@ -361,13 +361,13 @@ def start_feed_monitor(
     min_interval_seconds: int,
     state_path: Path,
     ai_registry: AIRegistry,
-    bots: dict,
+    bots: dict[str, Any],
     personas: PersonaRegistry,
     conv: ConversationStore,
     alerts: AlertSender,
     panel_chat_id: int,
-    search_client=None,
-) -> asyncio.Task:
+    search_client: Any = None,
+) -> "asyncio.Task[None]":
     """Create and start the feed monitor background task; return the Task."""
     available = list(ai_registry.providers)
     scoring_provider = next(
