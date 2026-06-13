@@ -23,6 +23,7 @@ def _clear_biz_state() -> None:
     biz_mod._contact_today.clear()
     biz_mod._admin_topics.clear()
     biz_mod._admin_supergroup_id = None
+    biz_mod._muted_contacts.clear()
 
 
 def _add_contact(user_id: int, name: str, messages: list | None = None) -> None:
@@ -253,6 +254,40 @@ async def test_classify_owner_category_defaults_to_raznoe_on_error():
 
     result = await biz_mod._classify_owner_category("hello", reg)
     assert result == "📝 Разное"
+
+
+# ---------------------------------------------------------------------------
+# Mute / unmute per-contact AI
+# ---------------------------------------------------------------------------
+
+def test_muted_contact_shown_in_contacts_summary():
+    _clear_biz_state()
+    _add_contact(42, "Иван")
+    biz_mod._muted_contacts.add(42)
+    result = biz_mod.get_contacts_summary()
+    assert "🔇" in result
+
+
+def test_unmuted_contact_has_no_mute_marker():
+    _clear_biz_state()
+    _add_contact(42, "Иван")
+    result = biz_mod.get_contacts_summary()
+    assert "🔇" not in result
+
+
+def test_init_business_state_restores_muted_contacts(tmp_path):
+    _clear_biz_state()
+    data = {"muted_contacts": [7, 13]}
+    biz_mod.init_business_state(tmp_path / "state.json", data)
+    assert 7 in biz_mod._muted_contacts
+    assert 13 in biz_mod._muted_contacts
+
+
+def test_init_business_state_ignores_bad_muted_contacts(tmp_path):
+    _clear_biz_state()
+    data = {"muted_contacts": "not a list"}
+    biz_mod.init_business_state(tmp_path / "state.json", data)
+    assert len(biz_mod._muted_contacts) == 0
 
 
 async def test_classify_owner_category_strips_quotes():

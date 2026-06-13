@@ -50,6 +50,10 @@ _create_topic_locks: dict[int, asyncio.Lock] = {}
 # When exceeded, the oldest (first-inserted) contact is evicted.
 _MAX_CONTACTS: int = 500
 
+# Contacts for which AI auto-replies are paused (admin typed /mute in their topic).
+# Survived across restarts via bot_state.json.
+_muted_contacts: set[int] = set()
+
 # Path to the bot state JSON file — set by init_business_state() at startup
 _biz_state_path: Path | None = None
 
@@ -68,6 +72,7 @@ def _persist_business_state() -> None:
         "contact_topics": _state.encode_int_keys(_contact_topics),
         "admin_topics": _admin_topics,
         "admin_supergroup_id": _admin_supergroup_id,
+        "muted_contacts": list(_muted_contacts),
     })
 
 
@@ -89,9 +94,13 @@ def init_business_state(path: Path, data: dict) -> None:
     global _admin_supergroup_id
     _admin_supergroup_id = data.get("admin_supergroup_id") or None
 
+    muted_raw = data.get("muted_contacts", [])
+    if isinstance(muted_raw, list):
+        _muted_contacts.update(int(x) for x in muted_raw if isinstance(x, (int, str)))
+
     logger.info(
-        "Business state restored: %d contacts, %d admin topics",
-        len(_contact_topics), len(_admin_topics),
+        "Business state restored: %d contacts, %d admin topics, %d muted",
+        len(_contact_topics), len(_admin_topics), len(_muted_contacts),
     )
 
 
@@ -685,6 +694,11 @@ async def handle_business_message(
         except Exception as e:
             logger.debug("Failed to send notification to admin: %s", e)
 
+    # If admin muted this contact — skip AI reply entirely.
+    if message.from_user and message.from_user.id in _muted_contacts:
+        logger.info("AI reply skipped for muted contact %d", message.from_user.id)
+        return
+
     system_prompt = await _build_system_prompt(
         persona.system_prompt, calendar_client,
     )
@@ -1053,6 +1067,28 @@ async def handle_private_message(
                 f"- Если он просит что-то сделать - просто подтверди что сделано или сделаешь\n"
                 f"- Если спрашивает о переписке - дай краткую сводку"
             )
+
+    # /mute and /unmute in a contact topic — pause/resume AI auto-replies for that contact
+    if is_admin and thread_id and thread_id in _topic_contacts:
+        cmd = text.strip().lower()
+        contact_id = _topic_contacts[thread_id]
+        contact_name = _contact_data.get(contact_id, {}).get("name", f"ID:{contact_id}")
+        if cmd in ("/mute", "/pause"):
+            _muted_contacts.add(contact_id)
+            _persist_business_state()
+            try:
+                await message.answer(f"🔇 AI-ответы для «{contact_name}» приостановлены. /unmute чтобы возобновить.")
+            except Exception:
+                pass
+            return
+        if cmd in ("/unmute", "/resume"):
+            _muted_contacts.discard(contact_id)
+            _persist_business_state()
+            try:
+                await message.answer(f"🔔 AI-ответы для «{contact_name}» возобновлены.")
+            except Exception:
+                pass
+            return
 
     # Owner mode: admin writing in private DM or any supergroup (including main thread)
     chat_type = getattr(message.chat, "type", None)
@@ -1666,7 +1702,8 @@ def get_contacts_summary(max_contacts: int = 30) -> str:
             "—",
         )
         last_time = msgs[-1]["time"] if msgs else "?"
-        lines.append(f"• {data['name']} (id={uid}) — {last_time}")
+        mute_mark = " 🔇" if uid in _muted_contacts else ""
+        lines.append(f"• {data['name']} (id={uid}){mute_mark} — {last_time}")
         lines.append(f"  «{last_in}»")
     return "\n".join(lines)
 

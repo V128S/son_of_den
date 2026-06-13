@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (229 tests, e2e excluded by default)
+# Run all tests (233 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -89,7 +89,8 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 - **YouTube audio** — detects YouTube URLs in owner messages, downloads best audio via `YTDownloader`, sends as audio (or document if >50 MB) to a persistent `🎵 YouTube` forum topic (key `"🎵 YouTube:{chat_id}"`). Uses `FSInputFile` for aiogram 3.x compatibility.
 - **Owner topic categorisation** — when the admin writes in a forum topic (not a contact topic), the message is classified into one of 9 fixed categories and routed to the matching topic (or the topic is renamed). Uses `openrouter_gemini` for classification.
 - `_prepare_media_send()` — shared helper that resolves the target forum topic (get-or-create with recovery) and sends a placeholder message. Used by both Instagram and YouTube handlers to avoid duplication.
-- Module-level dicts (`_contact_topics`, `_admin_topics`, `_admin_supergroup_id`, etc.) are the in-memory state; `_persist_business_state()` flushes them to `bot_state.json` via `state.update()`.
+- **Contact mute** — admin types `/mute` (or `/pause`) in a contact's forum topic to pause AI auto-replies; `/unmute` (or `/resume`) to restore. Muted contacts are shown with 🔇 in `/contacts`. Persisted across restarts.
+- Module-level dicts (`_contact_topics`, `_admin_topics`, `_admin_supergroup_id`, `_muted_contacts`, etc.) are the in-memory state; `_persist_business_state()` flushes them to `bot_state.json` via `state.update()`.
 
 **`panel.py`** orchestrates the 5-bot discussion:
 - `PanelRoundRunner.run_round(topic)` — sequential round: each speaker responds in turn, then the moderator synthesises. Uses `_processing_lock` to ensure at most one active round at a time.
@@ -121,6 +122,7 @@ Each persona declares its own `provider`. `AIRegistry.get_client(provider)` retu
 - `contact_topics` — `{user_id: thread_id}` for business contacts
 - `admin_topics` — `{category_name: thread_id}` for owner categories (includes `"📸 Instagram:{chat_id}"` and `"🎵 YouTube:{chat_id}"` keys)
 - `admin_supergroup_id` — remembered supergroup chat_id for routing DM-sent media to forum topics
+- `muted_contacts` — list of user_ids for which AI auto-replies are paused
 - `feed_seen` — set of already-processed RSS entry IDs
 - `feed_last_round_ts` / `feed_rounds_today` / `feed_date_today` — feed rate-limiting
 - `conversations` — serialised `ConversationStore` snapshot (all conversation histories)
