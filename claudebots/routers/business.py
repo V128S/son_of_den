@@ -1,11 +1,19 @@
 import asyncio
+import base64
+import json
 import logging
+import re as _re
 import time
 from collections.abc import Callable
 from datetime import timedelta
 
 from aiogram import Bot, F, Router
-from aiogram.types import Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from claudebots.core.ai_registry import AIRegistry
 from claudebots.core.alerts import AlertSender
@@ -56,6 +64,19 @@ _muted_contacts: set[int] = set()
 
 # Path to the bot state JSON file — set by init_business_state() at startup
 _biz_state_path: Path | None = None
+
+# Latest inbound message per contact for the "Ask Panel" inline button
+_pending_panel_asks: dict[int, str] = {}
+
+# Expense detection: keyword + amount pattern
+_EXPENSE_KW_RE = _re.compile(
+    r"\b(потратил|заплатил|купил|стоит|обошлось|расход|трата|уплатил)\b",
+    _re.IGNORECASE,
+)
+_AMOUNT_RE = _re.compile(
+    r"\b\d[\d\s]*(?:[.,]\d+)?\s*(?:руб|грн|usd|eur|€|₴|\$|₽|р\.?)\b",
+    _re.IGNORECASE,
+)
 
 # Owner's personal topics in panel group: topic_name -> thread_id
 _admin_topics: dict[str, int] = {}
@@ -439,6 +460,7 @@ async def _on_private_message(
     insta_downloader: "InstagramDownloader | None" = None,
     yt_downloader: "YTDownloader | None" = None,
     social_downloader: "SocialDownloader | None" = None,
+    sheets_client: "GoogleSheetsClient | None" = None,
 ) -> None:
     """Handle direct messages to the business bot in private chat or supergroup with topics."""
     # Skip if it's a business connection message (handled by other handler)
@@ -460,6 +482,8 @@ async def _on_private_message(
         insta_downloader=insta_downloader,
         yt_downloader=yt_downloader,
         social_downloader=social_downloader,
+        sheets_client=sheets_client,
+        expenses_sheet_id=settings.expenses_sheet_id,
     )
 
 
@@ -557,6 +581,189 @@ async def _on_voice_message(
         yt_downloader=yt_downloader,
         social_downloader=social_downloader,
     )
+
+
+@business_router.callback_query(F.data.startswith("panel_ask:"))
+async def _on_panel_ask(
+    callback: CallbackQuery,
+    bots: dict[str, Bot],
+    personas,
+    ai_registry: AIRegistry,
+    conv: ConversationStore,
+    alerts: AlertSender,
+    settings,
+    search_client=None,
+) -> None:
+    await callback.answer()
+    if not callback.data:
+        return
+    contact_id = int(callback.data.split(":", 1)[1])
+    question = _pending_panel_asks.get(contact_id, "")
+    if not question:
+        data = _contact_data.get(contact_id, {})
+        for m in reversed(data.get("messages", [])):
+            if m.get("role") == "contact":
+                question = m.get("text", "")
+                break
+    if not question:
+        await callback.answer("Нет вопроса", show_alert=True)
+        return
+
+    contact_name = _contact_data.get(contact_id, {}).get("name", f"ID:{contact_id}")
+    topic_name = f"❓ {contact_name}: {question[:40]}"
+
+    from claudebots.routers.panel import PanelRoundRunner, get_or_create_panel_thread
+
+    panel_bot = bots.get("moderator")
+    if panel_bot is None:
+        return
+    thread_id = await get_or_create_panel_thread(panel_bot, settings.panel_chat_id, topic_name)
+
+    runner = PanelRoundRunner(
+        bots=bots,
+        personas=personas,
+        ai_registry=ai_registry,
+        conv=conv,
+        alerts=alerts,
+        panel_chat_id=settings.panel_chat_id,
+        thread_id=thread_id,
+        search_client=search_client,
+    )
+    full_topic = f"Вопрос от контакта {contact_name}: {question}"
+    task = asyncio.create_task(runner.run_round(full_topic))
+    task.add_done_callback(
+        lambda t: logger.warning("Panel ask round raised: %s", t.exception())
+        if not t.cancelled() and t.exception() else None
+    )
+    try:
+        await callback.message.answer(  # type: ignore[union-attr]
+            f"🎯 Запускаю панель с вопросом от {contact_name}…",
+            parse_mode=None,
+        )
+    except Exception:
+        pass
+
+
+@business_router.message(F.document & F.chat.type.in_({"private", "supergroup"}))
+async def _on_document_message(
+    message: Message,
+    bot: Bot,
+    ai_registry: AIRegistry,
+    settings,
+    bots: dict[str, Bot],
+) -> None:
+    """Summarise PDF documents forwarded by the admin."""
+    is_admin = bool(
+        message.from_user and message.from_user.id == settings.admin_user_id
+    )
+    if not is_admin:
+        return
+    doc = message.document
+    if doc is None or not (doc.mime_type or "").startswith("application/pdf"):
+        return
+
+    if doc.file_size and doc.file_size > 10 * 1024 * 1024:
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text="⚠️ PDF слишком большой (>10 МБ). Пришли меньший файл.",
+            message_thread_id=message.message_thread_id,
+            parse_mode=None,
+        )
+        return
+
+    placeholder = None
+    try:
+        placeholder = await bot.send_message(
+            chat_id=message.chat.id,
+            text="📄 Читаю документ…",
+            message_thread_id=message.message_thread_id,
+            parse_mode=None,
+        )
+    except Exception:
+        pass
+
+    try:
+        tg_file = await bot.get_file(doc.file_id)
+        import io
+        buf = io.BytesIO()
+        await bot.download_file(tg_file.file_path, destination=buf)  # type: ignore[arg-type]
+        pdf_bytes = buf.getvalue()
+
+        # Try to extract text with pypdf; fall back to Claude native PDF support
+        pdf_text: str | None = None
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+            pages_text = [p.extract_text() or "" for p in reader.pages]
+            pdf_text = "\n".join(pages_text)[:12000].strip()
+        except Exception:
+            pdf_text = None
+
+        if pdf_text:
+            client = ai_registry.get_client("openrouter_gemini" if "openrouter_gemini" in ai_registry.providers else "claude")
+            summary = await client.complete(
+                system="Ты делаешь краткие резюме документов. Язык ответа: русский.",
+                messages=[{
+                    "role": "user",
+                    "content": f"Документ: {doc.file_name or 'PDF'}\n\n{pdf_text}\n\nНапиши краткое резюме: главная идея, ключевые пункты, вывод.",
+                }],
+                max_tokens=1000,
+            )
+        else:
+            # No text extracted — use Claude's native PDF support (base64)
+            b64 = base64.standard_b64encode(pdf_bytes).decode()
+            claude_client = ai_registry.get_client("claude")
+            summary = await claude_client.complete(
+                system="Ты делаешь краткие резюме документов на русском языке.",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": b64,
+                            },
+                        },
+                        {"type": "text", "text": "Напиши краткое резюме этого документа: главная идея, ключевые пункты, вывод."},
+                    ],
+                }],
+                max_tokens=1000,
+            )
+
+        result_text = f"📄 <b>{doc.file_name or 'Документ'}</b>\n\n{summary}"
+        if placeholder:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=placeholder.message_id,
+                text=result_text,
+                parse_mode="HTML",
+            )
+        else:
+            await bot.send_message(
+                chat_id=message.chat.id,
+                text=result_text,
+                message_thread_id=message.message_thread_id,
+                parse_mode="HTML",
+            )
+    except Exception as e:
+        logger.warning("PDF summary failed: %s", e)
+        err = f"⚠️ Не удалось прочитать документ: {e}"
+        try:
+            if placeholder:
+                await bot.edit_message_text(
+                    chat_id=message.chat.id,
+                    message_id=placeholder.message_id,
+                    text=err, parse_mode=None,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=message.chat.id, text=err,
+                    message_thread_id=message.message_thread_id, parse_mode=None,
+                )
+        except Exception:
+            pass
 
 
 async def _extract_calendar_event(
@@ -689,11 +896,17 @@ async def handle_business_message(
         topic_id = await _get_or_create_contact_topic(bot, admin_user_id, user.id, user_name)
 
         notify_text = f"📩 {user_name}:\n{text[:500]}"
+        if text:
+            _pending_panel_asks[user.id] = text[:500]
+        _ask_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🎯 Спросить панель", callback_data=f"panel_ask:{user.id}")
+        ]])
         try:
             await bot.send_message(
                 admin_user_id,
                 notify_text,
                 message_thread_id=topic_id if topic_id else None,
+                reply_markup=_ask_kb if text else None,
             )
         except Exception as e:
             logger.debug("Failed to send notification to admin: %s", e)
@@ -1048,6 +1261,8 @@ async def handle_private_message(
     insta_downloader: "InstagramDownloader | None" = None,
     yt_downloader: "YTDownloader | None" = None,
     social_downloader: "SocialDownloader | None" = None,
+    sheets_client: "GoogleSheetsClient | None" = None,
+    expenses_sheet_id: str = "",
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
 ) -> None:
@@ -1147,6 +1362,65 @@ async def handle_private_message(
                 logger.warning("Meters reply failed: %s", _me)
             # Still let the conversation continue normally (no early return)
             # so the AI can also acknowledge/comment if needed
+
+    # ── Expense tracker ──────────────────────────────────────────────────────
+    if (
+        is_owner_mode
+        and expenses_sheet_id
+        and sheets_client is not None
+        and text
+        and _EXPENSE_KW_RE.search(text)
+        and _AMOUNT_RE.search(text)
+    ):
+        try:
+            await bot.send_chat_action(
+                chat_id=message.chat.id, action="typing",
+                message_thread_id=message.message_thread_id,
+            )
+        except Exception:
+            pass
+        try:
+            _exp_client = ai_registry.get_client(
+                "openrouter_gemini" if "openrouter_gemini" in ai_registry.providers else "claude"
+            )
+            _exp_raw = await _exp_client.complete(
+                system=(
+                    "Извлеки расход из сообщения. Верни ТОЛЬКО JSON вида: "
+                    '{"amount": "500", "currency": "UAH", "category": "Еда", "description": "обед в кафе"}. '
+                    "Если валюта не указана — используй UAH. Категория: одно слово или фраза."
+                ),
+                messages=[{"role": "user", "content": text}],
+                max_tokens=120,
+            )
+            _m = _re.search(r"\{[^}]+\}", _exp_raw, _re.DOTALL)
+            if _m:
+                _exp = json.loads(_m.group())
+                from datetime import date as _date
+                _date_str = _date.today().strftime("%Y-%m-%d")
+                _ok = await sheets_client.append_expense(
+                    sheet_id=expenses_sheet_id,
+                    date_str=_date_str,
+                    amount=str(_exp.get("amount", "")),
+                    currency=str(_exp.get("currency", "UAH")),
+                    category=str(_exp.get("category", "")),
+                    description=str(_exp.get("description", text[:80])),
+                )
+                _conf = (
+                    f"✅ Записал расход: {_exp.get('amount')} {_exp.get('currency')} — "
+                    f"{_exp.get('category')}: {_exp.get('description')}"
+                    if _ok else "⚠️ Не удалось записать расход в таблицу."
+                )
+                try:
+                    await bot.send_message(
+                        chat_id=message.chat.id, text=_conf,
+                        message_thread_id=message.message_thread_id, parse_mode=None,
+                    )
+                except Exception:
+                    pass
+                if _ok:
+                    return
+        except Exception as _exp_err:
+            logger.warning("Expense tracker failed: %s", _exp_err)
 
     # ── Instagram downloader ─────────────────────────────────────────────────
     if is_owner_mode and insta_downloader is not None:

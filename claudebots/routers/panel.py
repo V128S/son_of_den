@@ -378,6 +378,22 @@ async def _get_or_create_tasks_thread(bot: "Bot", chat_id: int) -> int | None:
         return None
 
 
+async def get_or_create_panel_thread(panel_bot: Bot, chat_id: int, topic_name: str) -> int | None:
+    """Return existing thread_id for *topic_name* or create a new panel topic."""
+    for tid, name in _panel_topics.items():
+        if name == topic_name:
+            return tid
+    try:
+        ft = await panel_bot.create_forum_topic(chat_id=chat_id, name=topic_name[:100])
+        tid = ft.message_thread_id
+        _panel_topics[tid] = topic_name
+        _persist_panel_state()
+        return tid
+    except Exception as e:
+        logger.warning("get_or_create_panel_thread(%r) failed: %s", topic_name, e)
+        return None
+
+
 @dataclass
 class PanelRoundRunner:
     bots: dict[str, Bot]

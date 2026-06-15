@@ -351,6 +351,148 @@ async def _feed_loop(monitor: FeedMonitor, interval_seconds: int) -> None:
         await asyncio.sleep(interval_seconds)
 
 
+async def _fetch_channel_entries_raw(
+    channel: str, since_ts: float
+) -> list[tuple[str, str, str, float]]:
+    """Fetch all feed entries for *channel* newer than *since_ts*."""
+    url = _RSS_BASE.format(channel=channel)
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                entries = _parse_rss(resp.text)
+            else:
+                # Fall back to t.me/s scraping
+                web_url = _TG_WEB_BASE.format(channel=channel)
+                resp2 = await client.get(web_url, headers={"User-Agent": "Mozilla/5.0"})
+                entries = _parse_tme(resp2.text, channel) if resp2.status_code == 200 else []
+    except Exception as e:
+        logger.debug("Digest: fetch failed for %s: %s", channel, e)
+        return []
+    return [(u, t, tx, ts) for u, t, tx, ts in entries if ts >= since_ts]
+
+
+async def build_daily_digest(
+    *,
+    channels: list[str],
+    ai_registry: "AIRegistry",
+    interests: str,
+) -> str | None:
+    """Fetch all channel entries from the past 24 h and return an AI digest string."""
+    if not channels:
+        return None
+    since = datetime.now(timezone.utc).timestamp() - 86400
+    all_entries: dict[str, list[tuple[str, str, str, float]]] = {}
+    for ch in channels:
+        entries = await _fetch_channel_entries_raw(ch, since)
+        if entries:
+            all_entries[ch] = entries
+
+    if not all_entries:
+        return None
+
+    # Build compact text block for AI
+    lines: list[str] = []
+    for ch, entries in all_entries.items():
+        lines.append(f"=== @{ch} ({len(entries)} posts) ===")
+        for _, title, text, _ in entries[:20]:
+            snippet = (text or title)[:200].replace("\n", " ")
+            lines.append(f"• {snippet}")
+
+    block = "\n".join(lines)[:6000]
+
+    available = list(ai_registry.providers)
+    provider = next(
+        (p for p in ["openrouter_gemini", "groq", "openrouter_deepseek", "claude"] if p in available),
+        available[0] if available else "claude",
+    )
+    try:
+        client = ai_registry.get_client(provider)
+        digest = await client.complete(
+            system=(
+                f"Ты составляешь ежедневный дайджест Telegram-каналов. "
+                f"Интересы читателя: {interests}. "
+                "Структурируй по каналам, выдели 3-5 самых важных постов, кратко изложи суть каждого. "
+                "Формат: канал → краткий список. Язык: русский."
+            ),
+            messages=[{"role": "user", "content": f"Посты за последние 24 ч:\n\n{block}"}],
+            max_tokens=1200,
+        )
+        return digest.strip() if digest else None
+    except Exception as e:
+        logger.warning("Digest: AI summarisation failed: %s", e)
+        return None
+
+
+async def _digest_loop(
+    *,
+    digest_time: str,
+    channels: list[str],
+    interests: str,
+    ai_registry: "AIRegistry",
+    bot: Any,
+    panel_chat_id: int,
+    user_timezone: str,
+) -> None:
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(user_timezone)
+    h, m = map(int, digest_time.split(":"))
+    while True:
+        now = datetime.now(tz)
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if target <= now:
+            target = target.replace(day=target.day + 1)
+        wait = (target - now).total_seconds()
+        await asyncio.sleep(wait)
+        try:
+            digest = await build_daily_digest(
+                channels=channels,
+                ai_registry=ai_registry,
+                interests=interests,
+            )
+            if digest:
+                header = f"📰 <b>Дайджест каналов</b> — {datetime.now(tz).strftime('%d.%m %H:%M')}\n\n"
+                await bot.send_message(
+                    chat_id=panel_chat_id,
+                    text=header + digest,
+                    parse_mode="HTML",
+                )
+                logger.info("Daily digest sent to panel chat %d", panel_chat_id)
+        except Exception as e:
+            logger.warning("Digest loop error: %s", e)
+
+
+def start_digest_scheduler(
+    *,
+    digest_time: str,
+    channels: list[str],
+    interests: str,
+    ai_registry: "AIRegistry",
+    bot: Any,
+    panel_chat_id: int,
+    user_timezone: str,
+) -> "asyncio.Task[None]":
+    """Start the daily digest background task."""
+    task = asyncio.create_task(
+        _digest_loop(
+            digest_time=digest_time,
+            channels=channels,
+            interests=interests,
+            ai_registry=ai_registry,
+            bot=bot,
+            panel_chat_id=panel_chat_id,
+            user_timezone=user_timezone,
+        )
+    )
+    task.add_done_callback(
+        lambda t: logger.warning("Digest scheduler raised: %s", t.exception())
+        if not t.cancelled() and t.exception()
+        else None
+    )
+    logger.info("Daily digest scheduler started (time=%s, channels=%s)", digest_time, channels)
+    return task
+
+
 def start_feed_monitor(
     *,
     channels: list[str],

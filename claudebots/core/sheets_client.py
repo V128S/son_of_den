@@ -168,6 +168,52 @@ class GoogleSheetsClient:
     # Public async API
     # ------------------------------------------------------------------
 
+    def _write_rows_to_sync(self, sheet_id: str, rows: list[list[str]]) -> int:
+        """Append rows to any given sheet by ID."""
+        svc = self._get_service()
+        if not svc:
+            return 0
+        try:
+            body = {"values": rows}
+            result = (
+                svc.spreadsheets()
+                .values()
+                .append(
+                    spreadsheetId=sheet_id,
+                    range="A:ZZ",
+                    valueInputOption="USER_ENTERED",
+                    body=body,
+                )
+                .execute()
+            )
+            return result.get("updates", {}).get("updatedRows", len(rows))
+        except Exception as e:
+            logger.warning("Sheets: write to %s failed: %s", sheet_id, e)
+            return 0
+
+    async def append_expense(
+        self,
+        sheet_id: str,
+        date_str: str,
+        amount: str,
+        currency: str,
+        category: str,
+        description: str,
+        timeout: float = 10.0,
+    ) -> bool:
+        """Append one expense row [date, amount, currency, category, description] to sheet."""
+        row = [date_str, amount, currency, category, description]
+        loop = asyncio.get_running_loop()
+        try:
+            written = await asyncio.wait_for(
+                loop.run_in_executor(None, self._write_rows_to_sync, sheet_id, [row]),
+                timeout=timeout,
+            )
+            return written > 0
+        except asyncio.TimeoutError:
+            logger.warning("Sheets: expense write timed out")
+            return False
+
     async def transfer_prices(
         self, source_sheet_id: str, timeout: float = 20.0
     ) -> tuple[int, int]:

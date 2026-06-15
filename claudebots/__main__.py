@@ -13,7 +13,7 @@ from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.claude_client import ClaudeClient
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
-from claudebots.core.feed_monitor import start_feed_monitor
+from claudebots.core.feed_monitor import start_digest_scheduler as start_feed_digest, start_feed_monitor
 from claudebots.core.gemini_client import GeminiClient
 from claudebots.core.groq_client import GroqClient
 from claudebots.core.meters_client import MetersClient
@@ -486,6 +486,22 @@ async def amain() -> None:
     else:
         logger.info("Feed monitor disabled (FEED_CHANNELS not set)")
 
+    # Start daily feed digest (AI summary of all channel posts from the past 24 h)
+    digest_task: asyncio.Task[None] | None = None
+    if settings.feed_digest_time and feed_channels:
+        digest_task = start_feed_digest(
+            digest_time=settings.feed_digest_time,
+            channels=feed_channels,
+            interests=settings.feed_interests,
+            ai_registry=ai_registry,
+            bot=bots.get("analyst") or bots["business"],
+            panel_chat_id=settings.panel_chat_id,
+            user_timezone=settings.user_timezone,
+        )
+        logger.info("Feed digest scheduler started (time=%s)", settings.feed_digest_time)
+    else:
+        logger.info("Feed digest disabled (FEED_DIGEST_TIME not set or no channels)")
+
     # Start daily token budget monitor (alerts admin when daily cost exceeds threshold)
     budget_task: asyncio.Task[None] | None = None
     if settings.daily_cost_alert_usd > 0:
@@ -564,6 +580,12 @@ async def amain() -> None:
             followup_task.cancel()
             try:
                 await followup_task
+            except asyncio.CancelledError:
+                pass
+        if digest_task is not None:
+            digest_task.cancel()
+            try:
+                await digest_task
             except asyncio.CancelledError:
                 pass
 

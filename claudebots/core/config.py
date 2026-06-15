@@ -108,3 +108,11 @@ class Settings(BaseSettings):
     # When daily estimated cost exceeds this, the admin gets a one-time Telegram alert.
     daily_cost_alert_usd: float = 0.0
 
+    # Daily feed digest — AI summary of all channel posts from the past 24 h.
+    # Set to empty string to disable. Format: "HH:MM" in user_timezone.
+    feed_digest_time: str = ""
+
+    # Expense tracker — Google Sheet ID where parsed expenses are appended.
+    # Leave empty to disable.
+    expenses_sheet_id: str = ""
+
