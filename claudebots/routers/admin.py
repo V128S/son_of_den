@@ -170,6 +170,46 @@ async def _panelfind(message: Message, settings: Settings) -> None:
     await message.answer("\n".join(lines), parse_mode=None)
 
 
+@admin_router.message(Command("panelstatus"))
+async def _panelstatus(message: Message, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.panel import get_panel_status  # noqa: PLC0415
+    s = get_panel_status()
+    scheduled = s["scheduled"]
+    sched_str = f"{scheduled['topic'][:50]} в {scheduled['fire_at']}" if scheduled else "нет"
+    lines = [
+        "📡 Статус панели\n",
+        f"Активный раунд: {'✅ да' if s['active_round'] else '❌ нет'}",
+        f"Запланирован: {sched_str}",
+        f"Последний топик: thread #{s['last_thread_id'] or '—'}",
+        f"Топики: {s['topics_count']} | Памяти: {s['memories_count']} | "
+        f"Персона-МEM: {s['persona_mem_entries']} записей",
+        f"Напоминаний по задачам: {s['pending_reminders']}",
+    ]
+    await message.answer("\n".join(lines), parse_mode=None)
+
+
+@admin_router.message(Command("personas"))
+async def _personas(message: Message, personas, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.panel import get_panel_status  # noqa: PLC0415
+    mem = get_panel_status()["persona_memories"]
+    all_p = list(personas.panel_speakers) + ([personas.moderator] if personas.moderator else [])
+    lines = ["🧠 Память персон\n"]
+    for p in all_p:
+        entries = mem.get(p.id, [])
+        if entries:
+            lines.append(f"[{p.name}] ({len(entries)} записей):")
+            for e in entries:
+                lines.append(f"  • {e[:100]}")
+        else:
+            lines.append(f"[{p.name}] — нет записей")
+        lines.append("")
+    await message.answer("\n".join(lines).rstrip(), parse_mode=None)
+
+
 @admin_router.message(Command("panelschedule"))
 async def _panelschedule(
     message: Message,

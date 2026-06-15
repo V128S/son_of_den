@@ -668,6 +668,7 @@ async def handle_business_message(
         })
         # Keep only last 20 messages per contact
         _contact_data[user.id]["messages"] = _contact_data[user.id]["messages"][-20:]
+        _contact_data[user.id]["last_inbound_ts"] = time.time()
 
         # Track daily contact activity for digest
         _contact_today[user.id] = _contact_today.get(user.id, 0) + 1
@@ -1719,6 +1720,38 @@ async def _on_help(message: Message, settings) -> None:
 # ---------------------------------------------------------------------------
 # Public API for admin router
 # ---------------------------------------------------------------------------
+
+async def check_followup_contacts(bot: "Bot", admin_supergroup_id: int, followup_days: int) -> None:
+    """Send a one-time reminder for contacts who have been silent for *followup_days* days."""
+    if followup_days <= 0 or not _contact_data:
+        return
+    threshold = time.time() - followup_days * 86400
+    for uid, data in list(_contact_data.items()):
+        last_in = data.get("last_inbound_ts", 0.0)
+        if not last_in or last_in > threshold:
+            continue
+        last_followup = data.get("last_followup_sent", 0.0)
+        if last_followup > threshold:
+            continue
+        topic_id = _contact_topics.get(uid)
+        if topic_id is None:
+            continue
+        name = data.get("name", f"ID {uid}")
+        days_silent = max(1, int((time.time() - last_in) / 86400))
+        last_text = ""
+        for m in reversed(data.get("messages", [])):
+            if m.get("role") == "contact":
+                last_text = m.get("text", "")[:120]
+                break
+        snippet = f"\nПоследнее: «{last_text}»" if last_text else ""
+        msg = f"🔔 <b>{name}</b> молчит уже <b>{days_silent} дн.</b>{snippet}"
+        try:
+            await bot.send_message(admin_supergroup_id, msg, message_thread_id=topic_id, parse_mode="HTML")
+            data["last_followup_sent"] = time.time()
+            logger.info("Follow-up reminder sent for contact %s (%s)", uid, name)
+        except Exception as e:
+            logger.warning("Follow-up reminder failed for uid=%s: %s", uid, e)
+
 
 def get_contacts_summary(max_contacts: int = 30) -> str:
     """Return a formatted list of all known contacts for /contacts command."""

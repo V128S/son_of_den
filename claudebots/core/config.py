@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     # Interests for the daily news search (falls back to feed_interests when empty).
     daily_news_interests: str = ""
 
+    # Follow-up reminder: days of contact silence before the admin is reminded.
+    # Set to 0 to disable. Checked every 12 hours.
+    contact_followup_days: int = 0
+
     # Daily token cost alert threshold in USD. Set to 0.0 to disable.
     # When daily estimated cost exceeds this, the admin gets a one-time Telegram alert.
     daily_cost_alert_usd: float = 0.0

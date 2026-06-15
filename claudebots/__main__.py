@@ -24,7 +24,7 @@ from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.routers.admin import PersonaHolder, admin_router
 from claudebots.routers.briefing import start_briefing_scheduler
 from claudebots.routers.daily_news import start_daily_news_panel
-from claudebots.routers.business import business_router, init_business_state, start_digest_scheduler
+from claudebots.routers.business import business_router, check_followup_contacts, init_business_state, start_digest_scheduler
 from claudebots.routers.panel import (
     init_panel_state,
     panel_router,
@@ -70,6 +70,20 @@ async def _daily_usage_resetter(ai_registry) -> None:
         delay = (next_midnight - now).total_seconds()
         await asyncio.sleep(delay)
         ai_registry.reset_daily_usage()
+
+
+async def _followup_monitor(business_bot, followup_days: int) -> None:
+    """Check every 12 h for contacts who have been silent longer than followup_days."""
+    from claudebots.routers.business import _admin_supergroup_id  # noqa: PLC0415
+    while True:
+        await asyncio.sleep(12 * 3600)
+        supergroup_id = _admin_supergroup_id
+        if supergroup_id is None:
+            continue
+        try:
+            await check_followup_contacts(business_bot, supergroup_id, followup_days)
+        except Exception as e:
+            logger.warning("Follow-up monitor error: %s", e)
 
 
 async def _budget_monitor(ai_registry, bot, admin_user_id: int, budget_usd: float) -> None:
@@ -482,6 +496,16 @@ async def amain() -> None:
     else:
         logger.info("Budget monitor disabled (DAILY_COST_ALERT_USD not set or 0)")
 
+    # Follow-up reminders for silent contacts
+    followup_task: asyncio.Task[None] | None = None
+    if settings.contact_followup_days > 0:
+        followup_task = asyncio.create_task(
+            _followup_monitor(bots["business"], settings.contact_followup_days)
+        )
+        logger.info("Follow-up monitor enabled (%d days threshold)", settings.contact_followup_days)
+    else:
+        logger.info("Follow-up monitor disabled (CONTACT_FOLLOWUP_DAYS=0)")
+
     try:
         await dp.start_polling(*bots.values())
     finally:
@@ -534,6 +558,12 @@ async def amain() -> None:
             daily_news_task.cancel()
             try:
                 await daily_news_task
+            except asyncio.CancelledError:
+                pass
+        if followup_task is not None:
+            followup_task.cancel()
+            try:
+                await followup_task
             except asyncio.CancelledError:
                 pass
 

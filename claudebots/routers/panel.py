@@ -1470,6 +1470,27 @@ def get_panel_ratings_summary() -> dict:
         return {"good": 0, "bad": 0, "total": 0, "ratings": []}
 
 
+def get_panel_status() -> dict:
+    """Runtime snapshot for /panelstatus."""
+    active = bool(_active_round and not _active_round.done())
+    pending_reminders = 0
+    if _state_path is not None:
+        try:
+            pending_reminders = len(_state.load(_state_path).get("pending_reminders", []))
+        except Exception:
+            pass
+    return {
+        "active_round": active,
+        "scheduled": get_scheduled_panel(),
+        "last_thread_id": _last_thread_id,
+        "topics_count": len(_panel_topics),
+        "memories_count": len(_panel_memories),
+        "persona_mem_entries": sum(len(v) for v in _persona_memories.values()),
+        "persona_memories": dict(_persona_memories),
+        "pending_reminders": pending_reminders,
+    }
+
+
 def get_rated_rounds(rating: str, limit: int = 5) -> list[dict]:
     """Return the most recent rounds with a given rating ('good' or 'bad').
 
