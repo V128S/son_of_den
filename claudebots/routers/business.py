@@ -325,6 +325,7 @@ async def _on_business_message(
     calendar_client: "GoogleCalendarClient | None" = None,
     obsidian_client: "ObsidianClient | None" = None,
     sheets_client: "GoogleSheetsClient | None" = None,
+    search_client=None,
 ) -> None:
     # Use moderator bot for panel group (it has access there)
     panel_bot = bots.get("moderator")
@@ -342,6 +343,7 @@ async def _on_business_message(
         calendar_client=calendar_client,
         obsidian_client=obsidian_client,
         sheets_client=sheets_client,
+        search_client=search_client,
     )
 
 
@@ -637,6 +639,7 @@ async def handle_business_message(
     calendar_client: GoogleCalendarClient | None = None,
     obsidian_client: ObsidianClient | None = None,
     sheets_client: GoogleSheetsClient | None = None,
+    search_client=None,
     edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
     now: Callable[[], float] = time.monotonic,
 ) -> None:
@@ -702,6 +705,24 @@ async def handle_business_message(
     system_prompt = await _build_system_prompt(
         persona.system_prompt, calendar_client,
     )
+
+    # ── Exa web enrichment (Feature 13) ──────────────────────────────────────
+    # If the contact sent a factual question, inject fresh search context so the
+    # assistant can reference real data instead of guessing.
+    if (
+        search_client is not None
+        and getattr(search_client, "enabled", False)
+        and text
+        and ("?" in text or len(text.split()) >= 10)
+    ):
+        try:
+            results = await search_client.search(text[:200], num_results=2)
+            if results:
+                ctx = search_client.format_results(results)
+                system_prompt = system_prompt + "\n\n" + ctx
+                logger.debug("Exa context injected for business reply (%d results)", len(results))
+        except Exception as _exa_err:
+            logger.debug("Exa search for business reply failed: %s", _exa_err)
 
     try:
         await bot.send_chat_action(

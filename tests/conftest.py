@@ -91,6 +91,7 @@ def ai_registry_mock() -> AIRegistry:
         "openrouter_deepseek": client,
         "openrouter_owl": client,
         "openrouter_gemini": client,
+        "openrouter_nemotron": client,
         "gemini": client,
     }
     return AIRegistry(clients)
@@ -104,6 +105,7 @@ def bot_mocks() -> dict[str, MagicMock]:
         b = MagicMock(name=f"bot_{name}")
         b.send_message = AsyncMock()
         b.edit_message_text = AsyncMock()
+        b.delete_message = AsyncMock()
         b.send_chat_action = AsyncMock()
         b.read_business_message = AsyncMock()
         bots[name] = b

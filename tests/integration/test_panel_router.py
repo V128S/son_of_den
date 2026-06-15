@@ -5,11 +5,25 @@ import pytest
 from claudebots.routers.panel import PanelRoundRunner
 
 
+# ---------------------------------------------------------------------------
+# Helper: stream that raises immediately so _speak() falls back to complete()
+# ---------------------------------------------------------------------------
+
+async def _raising_stream(**kwargs):
+    raise RuntimeError("stream not available")
+    yield  # make it a valid async generator
+
+
+# ---------------------------------------------------------------------------
+# Core round tests
+# ---------------------------------------------------------------------------
+
 async def test_full_round_calls_each_persona_in_order(
     personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch
 ):
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
     monkeypatch.setattr("claudebots.routers.panel._SHUFFLE_SPEAKERS", False)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -21,26 +35,19 @@ async def test_full_round_calls_each_persona_in_order(
 
     await runner.run_round("Тема: что делать с инфляцией?")
 
-    # 4 speakers + mod summary + action items + memory = 7 client calls
+    # Speakers use stream(); only mod summary + action items + memory call complete()
     client = ai_registry_mock.get_client("claude")
-    assert client.complete.await_count == 7
+    assert client.complete.await_count == 3
 
-    # First 5 calls use persona/moderator system prompts; last 2 use internal prompts
     systems = [c.kwargs["system"] for c in client.complete.await_args_list]
-    assert systems[:5] == [
-        "analyst system",
-        "skeptic system",
-        "creative system",
-        "pragmatist system",
-        "mod system",
-    ]
-    # action items and memory use their own system strings
-    assert "action items" in systems[5].lower() or "выделяй" in systems[5].lower()
-    assert "дискуссии" in systems[6].lower() or "сжимай" in systems[6].lower()
+    assert systems[0] == "mod system"
+    assert "action items" in systems[1].lower() or "выделяй" in systems[1].lower()
+    assert "дискуссии" in systems[2].lower() or "сжимай" in systems[2].lower()
 
 
 async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -54,15 +61,18 @@ async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_
 
     # Moderator sends opening + closing summary
     assert bot_mocks["moderator"].send_message.await_count == 2
-    # Each speaker sends one message
+    # Each speaker sends one placeholder "💬" then edits with final text
     for name in ("analyst", "skeptic", "creative", "pragmatist"):
         assert bot_mocks[name].send_message.await_count == 1
-        bot_mocks[name].send_message.assert_any_await(-1001, "canned response", message_thread_id=None)
+        bot_mocks[name].send_message.assert_any_await(-1001, "💬", message_thread_id=None)
+        # Final text delivered via edit_message_text
+        assert bot_mocks[name].edit_message_text.await_count >= 1
 
 
 async def test_history_carries_speaker_labels(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
     monkeypatch.setattr("claudebots.routers.panel._SHUFFLE_SPEAKERS", False)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     runner = PanelRoundRunner(
         bots=bot_mocks,
         personas=personas,
@@ -88,16 +98,22 @@ async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks
     from claudebots.core.ai_registry import AIRegistry
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
     monkeypatch.setattr("claudebots.routers.panel._SHUFFLE_SPEAKERS", False)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
 
     client = MagicMock()
-    side_effects = [
-        "ok1",
-        RuntimeError("skeptic fail"),
-        "ok3",
-        "ok4",
-        "summary",
-    ]
-    client.complete = AsyncMock(side_effect=side_effects)
+    # Stream raises immediately → falls back to complete() for each speaker.
+    # Skeptic's complete() call also raises → persona fails.
+    # Then: mod summary + action items + memory.
+    client.stream = _raising_stream
+    client.complete = AsyncMock(side_effect=[
+        "ok1",                          # analyst (stream fallback)
+        RuntimeError("skeptic fail"),   # skeptic (stream fallback) — fails
+        "ok3",                          # creative (stream fallback)
+        "ok4",                          # pragmatist (stream fallback)
+        "summary",                      # moderator summary
+        "нет",                          # action items
+        "панельная память",             # memory
+    ])
     client.usage = {"input": 0, "output": 0, "cache_read": 0}
 
     ai_registry = AIRegistry({"claude": client})
@@ -113,10 +129,12 @@ async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks
 
     await runner.run_round("topic")
 
-    # Skeptic did NOT send a message
-    bot_mocks["skeptic"].send_message.assert_not_called()
-    # Others did
+    # Skeptic sent placeholder "💬" but it was deleted (persona failed)
+    bot_mocks["skeptic"].send_message.assert_any_await(-1001, "💬", message_thread_id=None)
+    bot_mocks["skeptic"].delete_message.assert_awaited_once()
+    # Others sent placeholder and their edit_message_text was called (success)
     assert bot_mocks["analyst"].send_message.await_count >= 1
+    assert bot_mocks["analyst"].edit_message_text.await_count >= 1
     bot_mocks["creative"].send_message.assert_awaited_once()
     bot_mocks["pragmatist"].send_message.assert_awaited_once()
     # Moderator still produced summary
@@ -128,10 +146,15 @@ async def test_one_speaker_failure_does_not_kill_round(personas, conv, bot_mocks
 async def test_moderator_failure_sends_fallback(personas, conv, bot_mocks, alerts_mock, monkeypatch):
     from claudebots.core.ai_registry import AIRegistry
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 4)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
 
     client = MagicMock()
-    side_effects = ["ok1", "ok2", "ok3", "ok4", RuntimeError("mod fail")]
-    client.complete = AsyncMock(side_effect=side_effects)
+    # Stream raises → falls back to complete() for all speakers
+    client.stream = _raising_stream
+    client.complete = AsyncMock(side_effect=[
+        "ok1", "ok2", "ok3", "ok4",    # 4 speakers via stream fallback
+        RuntimeError("mod fail"),        # moderator summary fails
+    ])
     client.usage = {"input": 0, "output": 0, "cache_read": 0}
 
     ai_registry = AIRegistry({"claude": client})
@@ -307,6 +330,7 @@ async def test_action_items_posted_to_tasks_thread(
     import claudebots.routers.panel as panel_mod
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
     monkeypatch.setattr("claudebots.routers.panel._panel_topics", {})
 
@@ -316,12 +340,12 @@ async def test_action_items_posted_to_tasks_thread(
     bot_mocks["moderator"].create_forum_topic = AsyncMock(return_value=fake_topic)
 
     client = MagicMock()
-    # run_round speakers (2) + moderator summary + action items + memory = 5 calls
+    # Speakers use stream() → no speaker complete() calls.
+    # complete() calls: moderator summary + action items + memory.
     client.complete = AsyncMock(side_effect=[
-        "idea A", "idea B",           # 2 speakers
-        "summary text",                # moderator summary
-        "1. Изучить рынок\n2. Созвать встречу",  # action items
-        "Нужно изучить рынок.",         # memory
+        "summary text",                                  # moderator summary
+        "1. Изучить рынок\n2. Созвать встречу",          # action items
+        "Нужно изучить рынок.",                          # memory
     ])
     client.usage = {"input": 0, "output": 0, "cache_read": 0}
     ai_registry = AIRegistry({"claude": client})
@@ -358,14 +382,14 @@ async def test_no_action_items_when_ai_says_net(
     import claudebots.routers.panel as panel_mod
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
     client = MagicMock()
     client.complete = AsyncMock(side_effect=[
-        "reply A", "reply B",  # speakers
-        "summary",             # moderator
-        "нет",                 # action items → none
-        "Вывод обсуждения.",   # memory
+        "summary",              # moderator summary
+        "нет",                  # action items → none
+        "Вывод обсуждения.",    # memory
     ])
     client.usage = {"input": 0, "output": 0, "cache_read": 0}
     ai_registry = AIRegistry({"claude": client})
@@ -395,15 +419,15 @@ async def test_panel_memory_saved_after_round(
     import claudebots.routers.panel as panel_mod
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", [])
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
     client = MagicMock()
     client.complete = AsyncMock(side_effect=[
-        "r1", "r2",            # speakers
-        "summary",             # moderator
-        "нет",                 # action items
-        "Главный вывод раунда.",  # memory
+        "summary",                  # moderator summary
+        "нет",                      # action items
+        "Главный вывод раунда.",    # memory
     ])
     client.usage = {"input": 0, "output": 0, "cache_read": 0}
     ai_registry = AIRegistry({"claude": client})
@@ -432,6 +456,7 @@ async def test_panel_memory_capped_at_max(
     import claudebots.routers.panel as panel_mod
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     # Pre-fill with PANEL_MEMORY_MAX entries (new dict format)
     initial = [{"text": f"memory {i}", "topic": "Topic", "ts": 0.0} for i in range(panel_mod.PANEL_MEMORY_MAX)]
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", list(initial))
@@ -439,7 +464,7 @@ async def test_panel_memory_capped_at_max(
 
     client = MagicMock()
     client.complete = AsyncMock(side_effect=[
-        "r1", "r2", "summary", "нет", "Новый вывод.",
+        "summary", "нет", "Новый вывод.",
     ])
     client.usage = {"input": 0, "output": 0, "cache_read": 0}
     ai_registry = AIRegistry({"claude": client})
@@ -466,6 +491,7 @@ async def test_memory_injected_into_next_round_context(
     import claudebots.routers.panel as panel_mod
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 1)
+    monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
     monkeypatch.setattr("claudebots.routers.panel._panel_memories", [{"text": "Прошлый вывод: X важнее Y.", "topic": "Old", "ts": 0.0}])
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 

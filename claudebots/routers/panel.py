@@ -7,7 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aiogram import Bot, F, Router
-from aiogram.types import Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from claudebots.core.ai_registry import AIRegistry
 from claudebots.core.alerts import AlertSender
@@ -43,6 +48,12 @@ _PARTICIPANT_COUNT: int | None = None
 # False →  keep the YAML order (integration tests that assert specific sequence)
 _SHUFFLE_SPEAKERS: bool = True
 
+# Debate round toggle — patchable for tests.
+# None  →  50% probability per round (production)
+# True  →  always run debate
+# False →  never run debate
+_DEBATE_ENABLED: bool | None = None
+
 # Human-realistic timing — simulates reading, thinking, and composing time.
 # Each inter-message gap is split into two phases:
 #   1. SILENT_DELAY — pure silence, the "reader" is absorbing the previous message.
@@ -70,6 +81,14 @@ REMINDER_MAX_HOURS: float = 20.0
 _panel_memories: list[dict] = []
 PANEL_MEMORY_MAX = 30
 
+# Per-persona memory: last N messages each persona sent (for cross-round consistency).
+_persona_memories: dict[str, list[str]] = {}
+PERSONA_MEMORY_MAX = 3
+
+# Inline-rating state: round_id → {"topic": str, "thread_id": int | None}
+# Cleaned up after admin taps a button or on bot restart (ephemeral — intentional).
+_pending_rate: dict[str, dict] = {}
+
 # Thread ID for the ✅ Задачи topic in the panel group
 _tasks_thread_id: int | None = None
 
@@ -93,6 +112,16 @@ _REVIVAL_RESPONDER_INSTRUCTION = (
     "1-2 предложения, по делу, от себя. Без markdown."
 )
 
+# Debate-round instructions — personas directly address each other
+_DEBATE_INITIATOR_INSTRUCTION = (
+    "{name}, обращайся напрямую к {opponent}: укажи конкретно, с чем именно не согласен "
+    "и почему твоя позиция сильнее. 1-2 предложения, без markdown."
+)
+_DEBATE_RESPONDER_INSTRUCTION = (
+    "{name}, {initiator} оспорил твою позицию. Ответь конкретно: "
+    "либо признай слабое место, либо парируй. 1-2 предложения, без markdown."
+)
+
 
 def clean_markdown(text: str) -> str:
     """Remove markdown formatting symbols for cleaner Telegram output."""
@@ -108,6 +137,21 @@ def clean_markdown(text: str) -> str:
     # Clean up extra whitespace
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def _make_round_id() -> str:
+    """Generate a unique ID for a panel round (used as callback_data key)."""
+    ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return f"{ts}_{random.randint(100, 999)}"
+
+
+def _rate_keyboard(round_id: str) -> InlineKeyboardMarkup:
+    """Inline keyboard appended to the moderator summary for one-tap round rating."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="👍", callback_data=f"panel_rate:good:{round_id}"),
+        InlineKeyboardButton(text="👎", callback_data=f"panel_rate:bad:{round_id}"),
+        InlineKeyboardButton(text="🔁 Углубить", callback_data=f"panel_rate:deepen:{round_id}"),
+    ]])
 
 
 def _parse_mod_sections(text: str) -> dict[str, str]:
@@ -177,6 +221,7 @@ def _persist_panel_state() -> None:
         "tasks_thread_id": _tasks_thread_id,
         "last_thread_id": _last_thread_id,
         "panel_memories": list(_panel_memories),
+        "persona_memories": dict(_persona_memories),
     })
 
 
@@ -208,9 +253,16 @@ def init_panel_state(path: Path, data: dict) -> None:
         while len(_panel_memories) > PANEL_MEMORY_MAX:
             _panel_memories.pop(0)
 
+    # Restore per-persona memories
+    raw_pmem = data.get("persona_memories", {})
+    if isinstance(raw_pmem, dict):
+        for pid, msgs in raw_pmem.items():
+            if isinstance(msgs, list):
+                _persona_memories[str(pid)] = [str(m) for m in msgs if isinstance(m, str)]
+
     logger.info(
-        "Panel state restored: %d topics, tasks_thread=%s, %d memories",
-        len(_panel_topics), _tasks_thread_id, len(_panel_memories),
+        "Panel state restored: %d topics, tasks_thread=%s, %d memories, %d persona-mem slots",
+        len(_panel_topics), _tasks_thread_id, len(_panel_memories), len(_persona_memories),
     )
 
 
@@ -336,12 +388,19 @@ class PanelRoundRunner:
     def _key(self) -> str:
         return f"panel:{self.panel_chat_id}"
 
-    async def _send(self, bot: Bot, text: str, parse_mode: str | None = None) -> None:
+    async def _send(
+        self,
+        bot: Bot,
+        text: str,
+        parse_mode: str | None = None,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> "Message | None":
         """Send message with a sustained typing indicator.
 
         Refreshes send_chat_action every 4 s so Telegram keeps showing "typing…"
         for the full composing window (TYPING_DELAY_MIN … TYPING_DELAY_MAX seconds).
-        When parse_mode is set (e.g. "HTML") it is forwarded to send_message.
+        When parse_mode / reply_markup are set they are forwarded to send_message.
+        Returns the sent Message (useful for later edits, e.g. removing keyboards).
         """
         logger.debug("_send: chat=%s thread=%s len=%d", self.panel_chat_id, self.thread_id, len(text))
         compose_seconds = random.uniform(TYPING_DELAY_MIN, TYPING_DELAY_MAX)
@@ -359,25 +418,35 @@ class PanelRoundRunner:
             if remaining <= 0:
                 break
             await asyncio.sleep(min(4.0, remaining))
+        # Build kwargs conditionally so existing test assertions aren't widened
         if parse_mode is not None:
-            await bot.send_message(
+            return await bot.send_message(
                 self.panel_chat_id,
                 text,
                 message_thread_id=self.thread_id,
                 parse_mode=parse_mode,
+                reply_markup=reply_markup,
             )
-        else:
-            await bot.send_message(
-                self.panel_chat_id,
-                text,
-                message_thread_id=self.thread_id,
-            )
+        return await bot.send_message(
+            self.panel_chat_id,
+            text,
+            message_thread_id=self.thread_id,
+        )
+
+    def _persona_system(self, persona) -> str:
+        """Build the effective system prompt for a persona, injecting persona memory."""
+        mem = _persona_memories.get(persona.id)
+        if not mem:
+            return persona.system_prompt
+        mem_block = "\n\nТВОИ ПРОШЛЫЕ ПОЗИЦИИ (придерживайся согласованности):\n" + "\n".join(
+            f"• {m}" for m in mem
+        )
+        return persona.system_prompt + mem_block
 
     async def _speak(self, persona, key: str) -> bool:
-        """Have a persona speak. Returns True if successful."""
+        """Have a persona speak using streaming. Returns True if successful."""
         speaker_bot = self.bots[persona.id]
 
-        # Show typing before the AI call so the user sees activity immediately.
         try:
             await speaker_bot.send_chat_action(
                 chat_id=self.panel_chat_id,
@@ -387,36 +456,159 @@ class PanelRoundRunner:
         except Exception:
             pass
 
-        # Build messages with explicit instruction to respond
         messages = list(self.conv.get(key))
         messages.append({
             "role": "user",
             "content": _SPEAKER_TURN_INSTRUCTION.format(name=persona.name),
         })
 
-        try:
-            client = self.ai_registry.get_client(persona.provider)
+        system = self._persona_system(persona)
+        client = self.ai_registry.get_client(persona.provider)
 
-            response = await client.complete(
-                system=persona.system_prompt,
+        # ── Streaming path ──────────────────────────────────────────────────
+        try:
+            placeholder = await speaker_bot.send_message(
+                self.panel_chat_id,
+                "💬",
+                message_thread_id=self.thread_id,
+            )
+        except Exception as e:
+            logger.warning("Placeholder send failed for %s: %s", persona.id, e)
+            return False
+
+        buffer = ""
+        last_edit = asyncio.get_event_loop().time()
+        stream_ok = False
+        try:
+            async for chunk in client.stream(
+                system=system,
                 messages=messages,
                 max_tokens=persona.max_tokens,
-            )
-
-            clean_response = clean_markdown(response)
-            if not clean_response.strip():
-                logger.warning("Panel persona %s (%s) returned empty response", persona.id, persona.provider)
-                return False
-
-            # Send message immediately
-            await self._send(speaker_bot, clean_response)
-            self.conv.add(key, "assistant", f"[{persona.name}]: {clean_response}")
-            return True
-
+            ):
+                buffer += chunk
+                stream_ok = True
+                now = asyncio.get_event_loop().time()
+                if now - last_edit >= 0.8 and buffer.strip():
+                    try:
+                        await speaker_bot.edit_message_text(
+                            chat_id=self.panel_chat_id,
+                            message_id=placeholder.message_id,
+                            text=clean_markdown(buffer) or "💬",
+                        )
+                        last_edit = now
+                    except Exception:
+                        pass
         except Exception as e:
-            logger.warning("Panel persona %s (%s) failed: %s", persona.id, persona.provider, e)
-            await self.alerts.send(f"panel_{persona.id}", f"{type(e).__name__}: {e}")
+            if not stream_ok:
+                # stream() not implemented or failed immediately — fall back to complete()
+                logger.debug("Stream fallback for %s: %s", persona.id, e)
+                try:
+                    raw = await client.complete(
+                        system=system,
+                        messages=messages,
+                        max_tokens=persona.max_tokens,
+                    )
+                    buffer = raw
+                except Exception as e2:
+                    logger.warning("Panel persona %s (%s) failed: %s", persona.id, persona.provider, e2)
+                    await self.alerts.send(f"panel_{persona.id}", f"{type(e2).__name__}: {e2}")
+                    try:
+                        await speaker_bot.delete_message(
+                            chat_id=self.panel_chat_id,
+                            message_id=placeholder.message_id,
+                        )
+                    except Exception:
+                        pass
+                    return False
+            else:
+                logger.warning("Panel persona %s stream interrupted: %s", persona.id, e)
+
+        clean_response = clean_markdown(buffer)
+        if not clean_response.strip():
+            logger.warning("Panel persona %s returned empty response", persona.id)
+            try:
+                await speaker_bot.delete_message(
+                    chat_id=self.panel_chat_id,
+                    message_id=placeholder.message_id,
+                )
+            except Exception:
+                pass
             return False
+
+        # Final edit with complete text
+        try:
+            await speaker_bot.edit_message_text(
+                chat_id=self.panel_chat_id,
+                message_id=placeholder.message_id,
+                text=clean_response,
+            )
+        except Exception:
+            pass
+
+        self.conv.add(key, "assistant", f"[{persona.name}]: {clean_response}")
+
+        # Update persona memory (keep last PERSONA_MEMORY_MAX entries)
+        mem_entry = clean_response[:160].rstrip()
+        if persona.id not in _persona_memories:
+            _persona_memories[persona.id] = []
+        _persona_memories[persona.id].append(mem_entry)
+        if len(_persona_memories[persona.id]) > PERSONA_MEMORY_MAX:
+            _persona_memories[persona.id].pop(0)
+
+        return True
+
+    async def _speak_debate(
+        self, initiator_persona, responder_persona, key: str
+    ) -> None:
+        """One exchange: initiator challenges, responder replies. Silent on failure."""
+        init_instruction = _DEBATE_INITIATOR_INSTRUCTION.format(
+            name=initiator_persona.name,
+            opponent=responder_persona.name,
+        )
+        init_messages = list(self.conv.get(key))
+        init_messages.append({"role": "user", "content": init_instruction})
+
+        init_bot = self.bots[initiator_persona.id]
+        init_client = self.ai_registry.get_client(initiator_persona.provider)
+
+        try:
+            init_raw = await init_client.complete(
+                system=self._persona_system(initiator_persona),
+                messages=init_messages,
+                max_tokens=120,
+            )
+            init_text = clean_markdown(init_raw).strip()
+            if not init_text:
+                return
+            await self._send(init_bot, init_text)
+            self.conv.add(key, "assistant", f"[{initiator_persona.name}→{responder_persona.name}]: {init_text}")
+        except Exception as e:
+            logger.debug("Debate initiator %s failed: %s", initiator_persona.id, e)
+            return
+
+        await asyncio.sleep(random.uniform(SILENT_DELAY_MIN / 2, SILENT_DELAY_MAX / 2))
+
+        resp_instruction = _DEBATE_RESPONDER_INSTRUCTION.format(
+            name=responder_persona.name,
+            initiator=initiator_persona.name,
+        )
+        resp_messages = list(self.conv.get(key))
+        resp_messages.append({"role": "user", "content": resp_instruction})
+
+        resp_bot = self.bots[responder_persona.id]
+        resp_client = self.ai_registry.get_client(responder_persona.provider)
+        try:
+            resp_raw = await resp_client.complete(
+                system=self._persona_system(responder_persona),
+                messages=resp_messages,
+                max_tokens=120,
+            )
+            resp_text = clean_markdown(resp_raw).strip()
+            if resp_text:
+                await self._send(resp_bot, resp_text)
+                self.conv.add(key, "assistant", f"[{responder_persona.name}→{initiator_persona.name}]: {resp_text}")
+        except Exception as e:
+            logger.debug("Debate responder %s failed: %s", responder_persona.id, e)
 
     async def _speak_revival(self, persona, key: str, instruction: str) -> bool:
         """Have a persona deliver a short revival message. Returns True if successful."""
@@ -523,6 +715,7 @@ class PanelRoundRunner:
         logger.info("Round participants (%d/%d): %s", n, len(all_speakers), [p.id for p in active])
 
         sent = 0
+        successful: list = []  # track which personas spoke successfully
         for i, persona in enumerate(active):
             # Silent reading pause before every speaker except the first.
             if i > 0:
@@ -533,11 +726,52 @@ class PanelRoundRunner:
             success = await self._speak(persona, key)
             if success:
                 sent += 1
+                successful.append(persona)
                 logger.info("Discussion message %d/%d from %s", sent, n, persona.id)
             else:
                 logger.warning("Persona %s failed, skipping", persona.id)
 
-        # Moderator summary — silent pause then moderator shows typing via _send.
+        # ── Debate mini-round (Feature 1) ────────────────────────────────────
+        # When ≥ 2 speakers succeeded, run one direct exchange. Probability is
+        # 50% in production; can be overridden to True/False for tests.
+        _debate_roll = _DEBATE_ENABLED if _DEBATE_ENABLED is not None else (random.random() < 0.5)
+        if len(successful) >= 2 and _debate_roll:
+            await asyncio.sleep(random.uniform(SILENT_DELAY_MIN / 2, SILENT_DELAY_MAX / 2))
+            # Ask the cheapest available AI to pick the two most-opposed personas.
+            try:
+                names_str = ", ".join(p.name for p in successful)
+                pick_client = self.ai_registry.get_client(
+                    next(
+                        (p for p in ["groq", "openrouter_gemini", mod.provider if mod else "claude"]
+                         if self.ai_registry.has_provider(p)),
+                        (mod.provider if mod else "claude"),
+                    )
+                )
+                pick_raw = await pick_client.complete(
+                    system="Выбери двух участников с наиболее противоположными позициями.",
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"Участники обсуждения: {names_str}.\n"
+                            "По тексту выше выбери ДВУХ с наиболее противоположными позициями.\n"
+                            "Ответь СТРОГО двумя именами через запятую, без лишних слов."
+                        ),
+                    }],
+                    max_tokens=20,
+                )
+                picked = [n.strip() for n in pick_raw.strip().split(",")]
+                paired = [p for name in picked for p in successful if p.name == name]
+                if len(paired) >= 2:
+                    logger.info("Debate round: %s vs %s", paired[0].name, paired[1].name)
+                    await self._speak_debate(paired[0], paired[1], key)
+                else:
+                    # Fallback: pick first two successful speakers
+                    await self._speak_debate(successful[0], successful[1], key)
+            except Exception as e:
+                logger.debug("Debate picker failed, using fallback: %s", e)
+                await self._speak_debate(successful[0], successful[1], key)
+
+        # ── Moderator summary ────────────────────────────────────────────────
         mod = self.personas.moderator
         if mod is None:
             return
@@ -572,8 +806,19 @@ class PanelRoundRunner:
                 logger.warning("Moderator returned empty summary")
             else:
                 html_summary = _format_mod_html(clean_summary)
-                await self._send(moderator_bot, html_summary, parse_mode="HTML")
-                logger.info("Moderator summary: %d chars", len(html_summary))
+                # Attach rating keyboard so admin can rate the round with one tap
+                round_id = _make_round_id()
+                _pending_rate[round_id] = {
+                    "topic": topic,
+                    "thread_id": self.thread_id,
+                }
+                await self._send(
+                    moderator_bot,
+                    html_summary,
+                    parse_mode="HTML",
+                    reply_markup=_rate_keyboard(round_id),
+                )
+                logger.info("Moderator summary: %d chars (round_id=%s)", len(html_summary), round_id)
 
         except Exception as e:
             logger.warning("Moderator (%s) failed: %s", mod.provider, e)
@@ -1071,3 +1316,82 @@ async def _on_panel_message(
             if not t.cancelled() and t.exception() else None
         )
         _active_round = task
+
+
+# ---------------------------------------------------------------------------
+# Round rating callback handler
+# ---------------------------------------------------------------------------
+
+@panel_router.callback_query(F.data.startswith("panel_rate:"))
+async def _on_panel_rate(
+    cb: CallbackQuery,
+    bots: dict[str, Bot],
+    personas: PersonaRegistry,
+    ai_registry: AIRegistry,
+    conv: ConversationStore,
+    alerts: AlertSender,
+    settings,
+    search_client=None,
+) -> None:
+    """Handle 👍 / 👎 / 🔁 taps on the moderator summary message."""
+    if cb.data is None or cb.from_user is None or cb.message is None:
+        return
+    # Only the admin can rate rounds
+    if cb.from_user.id != settings.admin_user_id:
+        await cb.answer("Только администратор", show_alert=False)
+        return
+
+    parts = cb.data.split(":", 2)
+    if len(parts) != 3:
+        return
+    _, action, round_id = parts
+
+    pending = _pending_rate.get(round_id)
+    topic = pending["topic"] if pending else ""
+
+    if action in ("good", "bad"):
+        label = "👍 Полезно" if action == "good" else "👎 Вода"
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await cb.answer(label, show_alert=False)
+        # Persist rating
+        if _state_path is not None:
+            existing = _state.load(_state_path).get("panel_ratings", [])
+            existing.append({
+                "round_id": round_id,
+                "rating": action,
+                "topic": topic,
+                "ts": datetime.now(timezone.utc).timestamp(),
+            })
+            _state.update(_state_path, {"panel_ratings": existing[-200:]})
+        _pending_rate.pop(round_id, None)
+        logger.info("Round %s rated %s (topic=%r)", round_id, action, topic[:50])
+
+    elif action == "deepen":
+        thread_id = pending.get("thread_id") if pending else None
+        _pending_rate.pop(round_id, None)
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await cb.answer("🔁 Запускаю углублённый раунд…", show_alert=False)
+
+        runner = PanelRoundRunner(
+            bots=bots,
+            personas=personas,
+            ai_registry=ai_registry,
+            conv=conv,
+            alerts=alerts,
+            panel_chat_id=settings.panel_chat_id,
+            thread_id=thread_id,
+            search_client=search_client,
+        )
+        deep_topic = f"Углубляем: {topic}" if topic else "Продолжаем тему"
+        t = asyncio.create_task(runner.run_round(deep_topic))
+        t.add_done_callback(
+            lambda tt: logger.warning("Deepen round raised: %s", tt.exception())
+            if not tt.cancelled() and tt.exception() else None
+        )
+        logger.info("Deepen round started for topic=%r", topic[:50])
