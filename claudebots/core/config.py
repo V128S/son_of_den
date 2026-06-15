@@ -23,11 +23,12 @@ class Settings(BaseSettings):
     groq_api_key: SecretStr | None = None
     groq_model: str = "llama-3.3-70b-versatile"
 
-    # OpenRouter API for DeepSeek, Owl-Alpha and Gemini models
+    # OpenRouter API for DeepSeek, Owl-Alpha, Gemini and Nemotron models
     openrouter_api_key: SecretStr | None = None
     deepseek_model: str = "deepseek/deepseek-v4-flash:free"
     owl_alpha_model: str = "openrouter/owl-alpha"
     gemini_lite_model: str = "google/gemini-3.1-flash-lite"
+    nemotron_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
     # Google Gemini API (optional alternative for moderator)
     gemini_api_key: SecretStr | None = None
@@ -91,6 +92,13 @@ class Settings(BaseSettings):
     # Exa web search — optional enrichment for panel discussions.
     # Leave empty to disable web search (panel works without it).
     exa_api_key: SecretStr | None = None
+
+    # Daily news panel — triggers one panel discussion every morning at the given local time.
+    # The topic is built from yesterday's top news matching daily_news_interests.
+    # Set to empty string to disable.
+    daily_news_panel_time: str = ""
+    # Interests for the daily news search (falls back to feed_interests when empty).
+    daily_news_interests: str = ""
 
     # Daily token cost alert threshold in USD. Set to 0.0 to disable.
     # When daily estimated cost exceeds this, the admin gets a one-time Telegram alert.

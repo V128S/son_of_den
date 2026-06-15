@@ -110,6 +110,64 @@ def clean_markdown(text: str) -> str:
     return text.strip()
 
 
+def _parse_mod_sections(text: str) -> dict[str, str]:
+    """Extract ВЫВОД / ДЕЙСТВИЕ / ПОЗИЦИЯ labels from structured moderator output."""
+    sections: dict[str, str] = {}
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        for key in ("ВЫВОД", "ДЕЙСТВИЕ", "ПОЗИЦИЯ"):
+            if stripped.upper().startswith(key + ":"):
+                sections[key] = stripped[len(key) + 1:].strip()
+                break
+    return sections
+
+
+def _format_mod_html(raw: str) -> str:
+    """Render the moderator summary as Telegram HTML using blockquotes and rich tags.
+
+    Uses <blockquote> for the key conclusion and <blockquote expandable> (Bot API 7.9+)
+    for the collapsible details block (recommendation + position).
+    Falls back to a plain blockquote if the AI didn't follow the structured format.
+    """
+    import html as _h
+
+    sections = _parse_mod_sections(raw)
+
+    if not sections:
+        safe = _h.escape(raw.strip())
+        return (
+            "📋 <b>Итог дискуссии</b>\n\n"
+            f"<blockquote>{safe}</blockquote>\n\n"
+            "🎤 <i>Жду следующую тему.</i>"
+        )
+
+    parts: list[str] = ["📋 <b>Итог дискуссии</b>"]
+
+    conclusion = _h.escape(sections.get("ВЫВОД", ""))
+    if conclusion:
+        parts.append(f"<blockquote>💡 {conclusion}</blockquote>")
+
+    detail_lines: list[str] = []
+
+    action = _h.escape(sections.get("ДЕЙСТВИЕ", ""))
+    if action:
+        detail_lines.append(f"✅ <b>Что делать</b>\n{action}")
+
+    position = _h.escape(sections.get("ПОЗИЦИЯ", ""))
+    if position:
+        if "консенсус" in position.lower():
+            detail_lines.append("🤝 <i>Консенсус достигнут</i>")
+        else:
+            detail_lines.append(f"⚖️ <b>Позиция</b>\n{position}")
+
+    if detail_lines:
+        inner = "\n\n".join(detail_lines)
+        parts.append(f"<blockquote expandable>{inner}</blockquote>")
+
+    parts.append("🎤 <i>Жду следующую тему.</i>")
+    return "\n\n".join(parts)
+
+
 def _persist_panel_state() -> None:
     """Save current panel state to disk. No-op if state path not set."""
     if _state_path is None:
@@ -278,11 +336,12 @@ class PanelRoundRunner:
     def _key(self) -> str:
         return f"panel:{self.panel_chat_id}"
 
-    async def _send(self, bot: Bot, text: str) -> None:
+    async def _send(self, bot: Bot, text: str, parse_mode: str | None = None) -> None:
         """Send message with a sustained typing indicator.
 
         Refreshes send_chat_action every 4 s so Telegram keeps showing "typing…"
         for the full composing window (TYPING_DELAY_MIN … TYPING_DELAY_MAX seconds).
+        When parse_mode is set (e.g. "HTML") it is forwarded to send_message.
         """
         logger.debug("_send: chat=%s thread=%s len=%d", self.panel_chat_id, self.thread_id, len(text))
         compose_seconds = random.uniform(TYPING_DELAY_MIN, TYPING_DELAY_MAX)
@@ -300,11 +359,19 @@ class PanelRoundRunner:
             if remaining <= 0:
                 break
             await asyncio.sleep(min(4.0, remaining))
-        await bot.send_message(
-            self.panel_chat_id,
-            text,
-            message_thread_id=self.thread_id,
-        )
+        if parse_mode is not None:
+            await bot.send_message(
+                self.panel_chat_id,
+                text,
+                message_thread_id=self.thread_id,
+                parse_mode=parse_mode,
+            )
+        else:
+            await bot.send_message(
+                self.panel_chat_id,
+                text,
+                message_thread_id=self.thread_id,
+            )
 
     async def _speak(self, persona, key: str) -> bool:
         """Have a persona speak. Returns True if successful."""
@@ -484,11 +551,12 @@ class PanelRoundRunner:
             mod_messages.append({
                 "role": "user",
                 "content": (
-                    "Подведи КОНКРЕТНЫЙ итог дискуссии (3-4 предложения):\n"
-                    "1. Главный вывод одним предложением\n"
-                    "2. Конкретная рекомендация - ЧТО делать\n"
-                    "3. Если есть разногласия - выбери лучший вариант и объясни почему\n"
-                    "Будь решительным и конкретным. Без воды и общих фраз. Без markdown."
+                    "Подведи итог дискуссии. Ответь СТРОГО в таком формате — "
+                    "каждый пункт на отдельной строке, без лишних слов:\n\n"
+                    "ВЫВОД: <главная мысль одним предложением>\n"
+                    "ДЕЙСТВИЕ: <конкретно что сделать — одно предложение>\n"
+                    "ПОЗИЦИЯ: <кто прав и почему, если было разногласие; иначе: Консенсус>\n\n"
+                    "Без markdown. Без вводных фраз. Только три строки."
                 )
             })
 
@@ -503,9 +571,9 @@ class PanelRoundRunner:
                 await self._send(moderator_bot, mod.fallback)
                 logger.warning("Moderator returned empty summary")
             else:
-                summary_text = f"📋 Итог:\n{clean_summary}\n\n🎤 Жду следующую тему."
-                await self._send(moderator_bot, summary_text)
-                logger.info("Moderator summary: %d chars", len(summary_text))
+                html_summary = _format_mod_html(clean_summary)
+                await self._send(moderator_bot, html_summary, parse_mode="HTML")
+                logger.info("Moderator summary: %d chars", len(html_summary))
 
         except Exception as e:
             logger.warning("Moderator (%s) failed: %s", mod.provider, e)

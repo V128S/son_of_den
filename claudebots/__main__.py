@@ -23,6 +23,7 @@ from claudebots.core.personas import load_personas
 from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.routers.admin import PersonaHolder, admin_router
 from claudebots.routers.briefing import start_briefing_scheduler
+from claudebots.routers.daily_news import start_daily_news_panel
 from claudebots.routers.business import business_router, init_business_state, start_digest_scheduler
 from claudebots.routers.panel import (
     init_panel_state,
@@ -138,7 +139,7 @@ async def amain() -> None:
     else:
         logger.warning("Groq client disabled (GROQ_API_KEY not set)")
 
-    # OpenRouter clients (for creative, pragmatist, business, moderator)
+    # OpenRouter clients (for creative, pragmatist, business, moderator, nemotron panel)
     if settings.openrouter_api_key is not None:
         openrouter_key = settings.openrouter_api_key.get_secret_value()
         clients["openrouter_deepseek"] = OpenRouterClient(
@@ -153,11 +154,16 @@ async def amain() -> None:
             api_key=openrouter_key,
             model=settings.gemini_lite_model,
         )
+        clients["openrouter_nemotron"] = OpenRouterClient(
+            api_key=openrouter_key,
+            model=settings.nemotron_model,
+        )
         logger.info(
-            "OpenRouter clients enabled (deepseek=%s, owl=%s, gemini=%s)",
+            "OpenRouter clients enabled (deepseek=%s, owl=%s, gemini=%s, nemotron=%s)",
             settings.deepseek_model,
             settings.owl_alpha_model,
             settings.gemini_lite_model,
+            settings.nemotron_model,
         )
     else:
         logger.warning("OpenRouter clients disabled (OPENROUTER_API_KEY not set)")
@@ -186,7 +192,7 @@ async def amain() -> None:
     # If OpenRouter is down, Groq silently handles creative/pragmatist/gemini-lite personas.
     groq_client = clients.get("groq")
     if groq_client is not None:
-        for provider in ("openrouter_deepseek", "openrouter_owl", "openrouter_gemini"):
+        for provider in ("openrouter_deepseek", "openrouter_owl", "openrouter_gemini", "openrouter_nemotron"):
             if provider in clients:
                 clients[provider] = FallbackClient(
                     primary=clients[provider],
@@ -424,6 +430,25 @@ async def amain() -> None:
     else:
         logger.info("Morning briefing disabled (MORNING_BRIEFING_TIME not set)")
 
+    # Start daily news panel (once-a-day discussion at configured local time)
+    daily_news_task: asyncio.Task[None] | None = None
+    if settings.daily_news_panel_time:
+        news_interests = settings.daily_news_interests or settings.feed_interests
+        daily_news_task = start_daily_news_panel(
+            panel_time=settings.daily_news_panel_time,
+            timezone_str=settings.user_timezone,
+            interests=news_interests,
+            bots=bots,
+            personas=persona_holder.registry,
+            ai_registry=ai_registry,
+            conv=conv,
+            alerts=alerts,
+            panel_chat_id=settings.panel_chat_id,
+            search_client=search_client,
+        )
+    else:
+        logger.info("Daily news panel disabled (DAILY_NEWS_PANEL_TIME not set)")
+
     # Start feed monitor (auto-topics from Telegram channel RSS)
     feed_task: asyncio.Task[None] | None = None
     feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
@@ -503,6 +528,12 @@ async def amain() -> None:
             budget_task.cancel()
             try:
                 await budget_task
+            except asyncio.CancelledError:
+                pass
+        if daily_news_task is not None:
+            daily_news_task.cancel()
+            try:
+                await daily_news_task
             except asyncio.CancelledError:
                 pass
 

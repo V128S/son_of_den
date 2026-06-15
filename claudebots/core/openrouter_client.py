@@ -1,4 +1,4 @@
-"""OpenRouter client for DeepSeek and Owl-Alpha models.
+"""OpenRouter client for DeepSeek, Owl-Alpha, Gemini and Nemotron models.
 
 Drop-in alternative with the same `complete()` and `stream()` interface.
 OpenRouter exposes an OpenAI-compatible chat-completions API.
@@ -6,6 +6,7 @@ OpenRouter exposes an OpenAI-compatible chat-completions API.
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -16,6 +17,12 @@ from claudebots.core.ai_registry import Usage
 logger = logging.getLogger(__name__)
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>…</think> chain-of-thought blocks from thinking-model output."""
+    return _THINK_RE.sub("", text).strip()
 
 
 class OpenRouterClient:
@@ -71,7 +78,10 @@ class OpenRouterClient:
 
         choices = data.get("choices", [])
         if choices:
-            return choices[0].get("message", {}).get("content", "") or ""
+            msg = choices[0].get("message", {})
+            # Prefer pre-separated content field; strip any <think> blocks left in content.
+            content = msg.get("content", "") or ""
+            return _strip_thinking(content)
         return ""
 
     async def stream(
@@ -87,6 +97,12 @@ class OpenRouterClient:
             "max_tokens": max_tokens,
             "stream": True,
         }
+
+        # Buffer for filtering <think>…</think> chain-of-thought during streaming.
+        # Thinking models (e.g. Nemotron) emit the think block first; we suppress it
+        # and only start yielding once we're past </think>.
+        think_buf: str = ""
+        past_think: bool = False
 
         async with self._client.stream(
             "POST", "/chat/completions", json=payload
@@ -110,7 +126,22 @@ class OpenRouterClient:
                     delta = choices[0].get("delta", {})
                     content = delta.get("content")
                     if content:
-                        yield content
+                        if past_think:
+                            yield content
+                        else:
+                            think_buf += content
+                            close_idx = think_buf.find("</think>")
+                            if close_idx != -1:
+                                past_think = True
+                                after = think_buf[close_idx + len("</think>"):].lstrip("\n")
+                                if after:
+                                    yield after
+                                think_buf = ""
+                            elif "<think>" not in think_buf and not think_buf.lstrip().startswith("<"):
+                                # No thinking block at all — yield immediately
+                                past_think = True
+                                yield think_buf
+                                think_buf = ""
 
                 # Check for usage in final chunk
                 usage = chunk.get("usage")
@@ -122,6 +153,10 @@ class OpenRouterClient:
                         usage.get("prompt_tokens", 0),
                         usage.get("completion_tokens", 0),
                     )
+
+        # Flush anything left if </think> was never closed
+        if think_buf and past_think:
+            yield think_buf
 
     async def close(self) -> None:
         await self._client.aclose()
