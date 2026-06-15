@@ -6,6 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from claudebots.core.ai_registry import AIRegistry
+from claudebots.core.alerts import AlertSender
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
 from claudebots.core.personas import PersonaRegistry, load_personas
@@ -167,6 +168,92 @@ async def _panelfind(message: Message, settings: Settings) -> None:
         lines.append(f"[{topic}] {snippet}")
         lines.append("")
     await message.answer("\n".join(lines), parse_mode=None)
+
+
+@admin_router.message(Command("panelschedule"))
+async def _panelschedule(
+    message: Message,
+    bots: dict,
+    personas,
+    ai_registry: AIRegistry,
+    conv: ConversationStore,
+    alerts,
+    settings: Settings,
+    search_client=None,
+) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+
+    text = (message.text or "").removeprefix("/panelschedule").strip()
+    parts = text.split(None, 1)
+    if len(parts) < 2:
+        await message.answer(
+            "Использование: /panelschedule HH:MM Тема обсуждения\n"
+            "Пример: /panelschedule 15:30 Будущее ИИ в бизнесе",
+            parse_mode=None,
+        )
+        return
+
+    time_str, topic = parts[0], parts[1].strip()
+    if not topic:
+        await message.answer("Укажи тему после времени.", parse_mode=None)
+        return
+
+    try:
+        import zoneinfo  # noqa: PLC0415
+        from datetime import datetime, timedelta  # noqa: PLC0415
+        tz = zoneinfo.ZoneInfo(settings.user_timezone)
+        now = datetime.now(tz)
+        t = datetime.strptime(time_str, "%H:%M")
+        target = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        delay = (target - now).total_seconds()
+    except ValueError:
+        await message.answer(
+            "Неверный формат времени. Используй HH:MM, например 15:30.",
+            parse_mode=None,
+        )
+        return
+
+    from claudebots.routers.panel import schedule_panel_round, get_scheduled_panel, _last_thread_id  # noqa: PLC0415
+
+    # Warn if replacing an existing schedule
+    existing = get_scheduled_panel()
+    schedule_panel_round(
+        delay=delay,
+        bots=bots,
+        personas=personas,
+        ai_registry=ai_registry,
+        conv=conv,
+        alerts=alerts,
+        chat_id=settings.panel_chat_id,
+        topic=topic,
+        thread_id=_last_thread_id,
+        search_client=search_client,
+        fire_at_str=time_str,
+    )
+
+    minutes = int(delay // 60)
+    hours, mins = divmod(minutes, 60)
+    eta = f"{hours} ч {mins} мин" if hours else f"{mins} мин"
+    lines = [f"✅ Раунд запланирован на {time_str} (через {eta})", f"Тема: {topic}"]
+    if existing:
+        lines.append(f"⚠️ Предыдущий раунд «{existing['topic'][:50]}» отменён")
+    await message.answer("\n".join(lines), parse_mode=None)
+
+
+@admin_router.message(Command("panelcancel"))
+async def _panelcancel(message: Message, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.panel import cancel_scheduled_panel, get_scheduled_panel  # noqa: PLC0415
+    info = get_scheduled_panel()
+    if cancel_scheduled_panel():
+        topic = info["topic"][:60] if info else "—"
+        await message.answer(f"❌ Запланированный раунд отменён\nТема: {topic}", parse_mode=None)
+    else:
+        await message.answer("Нет запланированных раундов.", parse_mode=None)
 
 
 @admin_router.message(Command("panelbest"))

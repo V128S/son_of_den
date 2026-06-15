@@ -113,3 +113,179 @@ async def test_cost_shows_daily_and_alltime():
     call_args = msg.answer.call_args[0][0]
     assert "сегодня" in call_args.lower() or "Токены" in call_args
     assert "всего" in call_args.lower() or "ИТОГО" in call_args
+
+
+# ---------------------------------------------------------------------------
+# /panelbest and /panelworst
+# ---------------------------------------------------------------------------
+
+async def test_panelbest_no_ratings_shows_empty_message():
+    from claudebots.routers.admin import _panelbest
+    panel_mod._panel_memories.clear()
+    panel_mod._state_path = None  # no state file → get_rated_rounds returns []
+
+    msg = _make_message(user_id=42, text="/panelbest")
+    await _panelbest(msg, _make_settings(admin_id=42))
+    reply = msg.answer.call_args[0][0]
+    assert "нет" in reply.lower() or "👍" in reply
+
+
+async def test_panelbest_non_admin_ignored():
+    from claudebots.routers.admin import _panelbest
+
+    msg = _make_message(user_id=999, text="/panelbest")
+    await _panelbest(msg, _make_settings(admin_id=42))
+    msg.answer.assert_not_awaited()
+
+
+async def test_panelworst_non_admin_ignored():
+    from claudebots.routers.admin import _panelworst
+
+    msg = _make_message(user_id=999, text="/panelworst")
+    await _panelworst(msg, _make_settings(admin_id=42))
+    msg.answer.assert_not_awaited()
+
+
+async def test_panelbest_shows_rounds_with_memory(tmp_path, monkeypatch):
+    from claudebots.routers.admin import _panelbest
+    import time
+
+    ts = time.time()
+    panel_mod._panel_memories.clear()
+    panel_mod._panel_memories.append({"text": "ИИ победит всех", "topic": "Технологии", "ts": ts})
+
+    state_file = tmp_path / "state.json"
+    import json
+    state_file.write_text(json.dumps({"panel_ratings": [
+        {"round_id": "r1", "rating": "good", "topic": "Технологии", "ts": ts},
+    ]}))
+    monkeypatch.setattr(panel_mod, "_state_path", state_file)
+
+    msg = _make_message(user_id=42, text="/panelbest")
+    await _panelbest(msg, _make_settings(admin_id=42))
+    reply = msg.answer.call_args[0][0]
+    assert "Технологии" in reply
+    assert "ИИ победит" in reply
+
+
+async def test_panelworst_shows_bad_rounds(tmp_path, monkeypatch):
+    from claudebots.routers.admin import _panelworst
+    import time, json
+
+    ts = time.time()
+    panel_mod._panel_memories.clear()
+    panel_mod._panel_memories.append({"text": "Скучная дискуссия", "topic": "Финансы", "ts": ts})
+
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"panel_ratings": [
+        {"round_id": "r2", "rating": "bad", "topic": "Финансы", "ts": ts},
+    ]}))
+    monkeypatch.setattr(panel_mod, "_state_path", state_file)
+
+    msg = _make_message(user_id=42, text="/panelworst")
+    await _panelworst(msg, _make_settings(admin_id=42))
+    reply = msg.answer.call_args[0][0]
+    assert "Финансы" in reply
+
+
+# ---------------------------------------------------------------------------
+# /panelschedule and /panelcancel
+# ---------------------------------------------------------------------------
+
+async def test_panelschedule_non_admin_ignored():
+    from claudebots.routers.admin import _panelschedule
+
+    msg = _make_message(user_id=999, text="/panelschedule 15:00 Тема")
+    settings = _make_settings(admin_id=42)
+    settings.user_timezone = "Europe/Moscow"
+    settings.panel_chat_id = -1001
+    await _panelschedule(msg, {}, MagicMock(), MagicMock(), MagicMock(), MagicMock(), settings)
+    msg.answer.assert_not_awaited()
+
+
+async def test_panelschedule_missing_topic_shows_usage():
+    from claudebots.routers.admin import _panelschedule
+
+    msg = _make_message(user_id=42, text="/panelschedule")
+    settings = _make_settings(admin_id=42)
+    settings.user_timezone = "Europe/Moscow"
+    settings.panel_chat_id = -1001
+    await _panelschedule(msg, {}, MagicMock(), MagicMock(), MagicMock(), MagicMock(), settings)
+    reply = msg.answer.call_args[0][0]
+    assert "Использование" in reply or "HH:MM" in reply
+
+
+async def test_panelschedule_bad_time_format():
+    from claudebots.routers.admin import _panelschedule
+
+    msg = _make_message(user_id=42, text="/panelschedule 25:99 Тема")
+    settings = _make_settings(admin_id=42)
+    settings.user_timezone = "Europe/Moscow"
+    settings.panel_chat_id = -1001
+    await _panelschedule(msg, {}, MagicMock(), MagicMock(), MagicMock(), MagicMock(), settings)
+    reply = msg.answer.call_args[0][0]
+    assert "формат" in reply.lower() or "HH:MM" in reply
+
+
+async def test_panelschedule_creates_task(monkeypatch):
+    from claudebots.routers.admin import _panelschedule
+    import claudebots.routers.panel as panel_mod
+
+    scheduled_calls: list = []
+
+    def fake_schedule(delay, bots, personas, ai_registry, conv, alerts, chat_id, topic, **kw):
+        scheduled_calls.append({"delay": delay, "topic": topic})
+        # Also set _scheduled_info so get_scheduled_panel works
+        panel_mod._scheduled_info = {"topic": topic, "fire_at": kw.get("fire_at_str", "")}
+
+    monkeypatch.setattr(panel_mod, "schedule_panel_round", fake_schedule)
+    monkeypatch.setattr(panel_mod, "_last_thread_id", None)
+
+    msg = _make_message(user_id=42, text="/panelschedule 23:59 Будущее ИИ")
+    settings = _make_settings(admin_id=42)
+    settings.user_timezone = "Europe/Moscow"
+    settings.panel_chat_id = -1001
+    await _panelschedule(msg, {}, MagicMock(), MagicMock(), MagicMock(), MagicMock(), settings)
+
+    assert len(scheduled_calls) == 1
+    assert scheduled_calls[0]["topic"] == "Будущее ИИ"
+    assert scheduled_calls[0]["delay"] > 0
+    reply = msg.answer.call_args[0][0]
+    assert "23:59" in reply or "запланирован" in reply.lower()
+
+
+async def test_panelcancel_when_no_schedule():
+    from claudebots.routers.admin import _panelcancel
+    import claudebots.routers.panel as panel_mod
+
+    panel_mod._scheduled_task = None
+    panel_mod._scheduled_info = None
+
+    msg = _make_message(user_id=42, text="/panelcancel")
+    await _panelcancel(msg, _make_settings(admin_id=42))
+    reply = msg.answer.call_args[0][0]
+    assert "нет" in reply.lower()
+
+
+async def test_panelcancel_cancels_existing(monkeypatch):
+    from claudebots.routers.admin import _panelcancel
+    import claudebots.routers.panel as panel_mod
+
+    cancelled = [False]
+
+    def fake_cancel():
+        cancelled[0] = True
+        return True
+
+    def fake_get():
+        return {"topic": "Тест отмены", "fire_at": "15:00"}
+
+    monkeypatch.setattr(panel_mod, "cancel_scheduled_panel", fake_cancel)
+    monkeypatch.setattr(panel_mod, "get_scheduled_panel", fake_get)
+
+    msg = _make_message(user_id=42, text="/panelcancel")
+    await _panelcancel(msg, _make_settings(admin_id=42))
+
+    assert cancelled[0]
+    reply = msg.answer.call_args[0][0]
+    assert "отменён" in reply.lower() or "Тест отмены" in reply

@@ -28,6 +28,10 @@ panel_router = Router(name="panel")
 _active_round: asyncio.Task[None] | None = None
 _processing_lock = asyncio.Lock()
 
+# Scheduled one-shot panel round (admin /panelschedule command)
+_scheduled_task: asyncio.Task[None] | None = None
+_scheduled_info: dict | None = None  # {"topic": str, "fire_at": str}
+
 # Cache for topic_id -> topic_name mapping
 _panel_topics: dict[int, str] = {}
 
@@ -1382,6 +1386,75 @@ async def _on_panel_message(
             if not t.cancelled() and t.exception() else None
         )
         _active_round = task
+
+
+async def _run_scheduled_round(
+    delay: float,
+    bots: dict,
+    personas: "Any",
+    ai_registry: "Any",
+    conv: "Any",
+    alerts: "Any",
+    chat_id: int,
+    topic: str,
+    thread_id: "int | None",
+    search_client: "Any",
+) -> None:
+    global _scheduled_info
+    await asyncio.sleep(delay)
+    _scheduled_info = None
+    runner = PanelRoundRunner(
+        bots=bots, personas=personas, ai_registry=ai_registry,
+        conv=conv, alerts=alerts, panel_chat_id=chat_id,
+        thread_id=thread_id, search_client=search_client,
+    )
+    await runner.run_round(topic)
+
+
+def schedule_panel_round(
+    delay: float,
+    bots: dict,
+    personas: "Any",
+    ai_registry: "Any",
+    conv: "Any",
+    alerts: "Any",
+    chat_id: int,
+    topic: str,
+    thread_id: "int | None" = None,
+    search_client: "Any" = None,
+    fire_at_str: str = "",
+) -> None:
+    """Schedule a one-shot panel round after *delay* seconds. Cancels any existing schedule."""
+    global _scheduled_task, _scheduled_info
+    if _scheduled_task and not _scheduled_task.done():
+        _scheduled_task.cancel()
+    _scheduled_info = {"topic": topic, "fire_at": fire_at_str}
+    _scheduled_task = asyncio.create_task(
+        _run_scheduled_round(delay, bots, personas, ai_registry, conv, alerts, chat_id, topic, thread_id, search_client)
+    )
+    _scheduled_task.add_done_callback(
+        lambda t: logger.warning("Scheduled round raised: %s", t.exception())
+        if not t.cancelled() and t.exception() else None
+    )
+    logger.info("Panel round scheduled in %.0f s (topic=%r)", delay, topic[:50])
+
+
+def cancel_scheduled_panel() -> bool:
+    """Cancel the pending scheduled round. Returns True if there was one to cancel."""
+    global _scheduled_task, _scheduled_info
+    if _scheduled_task and not _scheduled_task.done():
+        _scheduled_task.cancel()
+        _scheduled_task = None
+        _scheduled_info = None
+        return True
+    return False
+
+
+def get_scheduled_panel() -> "dict | None":
+    """Return {"topic": str, "fire_at": str} if a round is pending, else None."""
+    if _scheduled_info and _scheduled_task and not _scheduled_task.done():
+        return dict(_scheduled_info)
+    return None
 
 
 def get_panel_ratings_summary() -> dict:
