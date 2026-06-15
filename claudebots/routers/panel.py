@@ -1385,16 +1385,41 @@ async def _on_panel_message(
 
 
 def get_panel_ratings_summary() -> dict:
-    """Return 👍/👎 counts from persisted panel_ratings."""
+    """Return 👍/👎 counts and rated-round list from persisted panel_ratings."""
     if _state_path is None:
-        return {"good": 0, "bad": 0, "total": 0}
+        return {"good": 0, "bad": 0, "total": 0, "ratings": []}
     try:
         ratings = _state.load(_state_path).get("panel_ratings", [])
         good = sum(1 for r in ratings if r.get("rating") == "good")
         bad = sum(1 for r in ratings if r.get("rating") == "bad")
-        return {"good": good, "bad": bad, "total": len(ratings)}
+        return {"good": good, "bad": bad, "total": len(ratings), "ratings": ratings}
     except Exception:
-        return {"good": 0, "bad": 0, "total": 0}
+        return {"good": 0, "bad": 0, "total": 0, "ratings": []}
+
+
+def get_rated_rounds(rating: str, limit: int = 5) -> list[dict]:
+    """Return the most recent rounds with a given rating ('good' or 'bad').
+
+    Each entry: {"topic": str, "ts": float, "memory": str | None}
+    The memory is looked up by matching topic name in _panel_memories (closest timestamp).
+    """
+    summary = get_panel_ratings_summary()
+    filtered = [r for r in summary["ratings"] if r.get("rating") == rating]
+    filtered.sort(key=lambda r: r.get("ts", 0), reverse=True)
+    result = []
+    for r in filtered[:limit]:
+        topic = r.get("topic", "")
+        ts = r.get("ts", 0.0)
+        # Find the closest memory by topic match, then ts proximity
+        candidates = [m for m in _panel_memories if m.get("topic", "") == topic]
+        if not candidates:
+            candidates = [m for m in _panel_memories if topic and topic[:20] in m.get("text", "")]
+        memory_text: str | None = None
+        if candidates:
+            best = min(candidates, key=lambda m: abs(m.get("ts", 0) - ts))
+            memory_text = best.get("text")
+        result.append({"topic": topic, "ts": ts, "memory": memory_text})
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -118,12 +118,21 @@ async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) 
     all_total = ai_registry.get_total_usage()
     ratings = get_panel_ratings_summary()
 
+    # Most-discussed category from panel memories
+    from collections import Counter  # noqa: PLC0415
+    topic_counts: Counter = Counter(
+        m.get("topic", "") for m in _panel_memories if m.get("topic")
+    )
+    top_topic = topic_counts.most_common(1)
+    top_str = f"{top_topic[0][0]} ({top_topic[0][1]})" if top_topic else "—"
+
     lines = [
         "📊 Статистика\n",
         f"Контакты всего: {len(_contact_data)}",
         f"Активны сегодня: {len(_contact_today)}",
         f"Топики панели: {len(_panel_topics)}",
         f"Памяти панели: {len(_panel_memories)}",
+        f"Топ тема: {top_str}",
         f"Оценок раундов: 👍{ratings['good']} 👎{ratings['bad']} (всего {ratings['total']})",
         "",
         f"Токены сегодня: in={daily_total['input']}  out={daily_total['output']}",
@@ -158,6 +167,44 @@ async def _panelfind(message: Message, settings: Settings) -> None:
         lines.append(f"[{topic}] {snippet}")
         lines.append("")
     await message.answer("\n".join(lines), parse_mode=None)
+
+
+@admin_router.message(Command("panelbest"))
+async def _panelbest(message: Message, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.panel import get_rated_rounds  # noqa: PLC0415
+    rounds = get_rated_rounds("good", limit=7)
+    if not rounds:
+        await message.answer("Ещё нет раундов с оценкой 👍.", parse_mode=None)
+        return
+    lines = [f"🏆 Топ раундов (👍 {len(rounds)} из последних):\n"]
+    for r in rounds:
+        topic = r["topic"][:60] or "—"
+        lines.append(f"📌 {topic}")
+        if r["memory"]:
+            lines.append(f"   💡 {r['memory'][:120]}")
+        lines.append("")
+    await message.answer("\n".join(lines).rstrip(), parse_mode=None)
+
+
+@admin_router.message(Command("panelworst"))
+async def _panelworst(message: Message, settings: Settings) -> None:
+    if message.from_user is None or message.from_user.id != settings.admin_user_id:
+        return
+    from claudebots.routers.panel import get_rated_rounds  # noqa: PLC0415
+    rounds = get_rated_rounds("bad", limit=5)
+    if not rounds:
+        await message.answer("Нет раундов с оценкой 👎.", parse_mode=None)
+        return
+    lines = [f"👎 Раунды, которые стоит углубить ({len(rounds)}):\n"]
+    for r in rounds:
+        topic = r["topic"][:60] or "—"
+        lines.append(f"📌 {topic}")
+        if r["memory"]:
+            lines.append(f"   💡 {r['memory'][:120]}")
+        lines.append("")
+    await message.answer("\n".join(lines).rstrip(), parse_mode=None)
 
 
 @admin_router.message(Command("reload"))
