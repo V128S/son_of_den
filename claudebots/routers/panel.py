@@ -778,6 +778,17 @@ class PanelRoundRunner:
 
         await asyncio.sleep(random.uniform(SILENT_DELAY_MIN, SILENT_DELAY_MAX))
 
+        # Send placeholder immediately so admin sees the moderator "thinking"
+        mod_placeholder = None
+        try:
+            mod_placeholder = await moderator_bot.send_message(
+                self.panel_chat_id,
+                "📋 Формирую итог…",
+                message_thread_id=self.thread_id,
+            )
+        except Exception:
+            pass
+
         try:
             mod_client = self.ai_registry.get_client(mod.provider)
 
@@ -794,36 +805,91 @@ class PanelRoundRunner:
                 )
             })
 
-            summary = await mod_client.complete(
-                system=mod.system_prompt,
-                messages=mod_messages,
-                max_tokens=mod.max_tokens,
-            )
+            # ── Streaming path ───────────────────────────────────────────────
+            raw_buffer = ""
+            last_edit = asyncio.get_event_loop().time()
+            stream_ok = False
+            try:
+                async for chunk in mod_client.stream(
+                    system=mod.system_prompt,
+                    messages=mod_messages,
+                    max_tokens=mod.max_tokens,
+                ):
+                    raw_buffer += chunk
+                    stream_ok = True
+                    now = asyncio.get_event_loop().time()
+                    if now - last_edit >= 1.5 and raw_buffer.strip() and mod_placeholder:
+                        try:
+                            await moderator_bot.edit_message_text(
+                                chat_id=self.panel_chat_id,
+                                message_id=mod_placeholder.message_id,
+                                text=raw_buffer[:800],
+                            )
+                            last_edit = now
+                        except Exception:
+                            pass
+            except Exception as _se:
+                if not stream_ok:
+                    raw_buffer = await mod_client.complete(
+                        system=mod.system_prompt,
+                        messages=mod_messages,
+                        max_tokens=mod.max_tokens,
+                    )
+                else:
+                    logger.warning("Moderator stream interrupted: %s", _se)
 
-            clean_summary = clean_markdown(summary)
+            clean_summary = clean_markdown(raw_buffer)
+            round_id = _make_round_id()
+            _pending_rate[round_id] = {"topic": topic, "thread_id": self.thread_id}
+
             if not clean_summary.strip():
-                await self._send(moderator_bot, mod.fallback)
                 logger.warning("Moderator returned empty summary")
+                _pending_rate.pop(round_id, None)
+                _fallback = mod.fallback
+                if mod_placeholder:
+                    try:
+                        await moderator_bot.edit_message_text(
+                            chat_id=self.panel_chat_id,
+                            message_id=mod_placeholder.message_id,
+                            text=_fallback,
+                        )
+                    except Exception:
+                        await self._send(moderator_bot, _fallback)
+                else:
+                    await self._send(moderator_bot, _fallback)
             else:
                 html_summary = _format_mod_html(clean_summary)
-                # Attach rating keyboard so admin can rate the round with one tap
-                round_id = _make_round_id()
-                _pending_rate[round_id] = {
-                    "topic": topic,
-                    "thread_id": self.thread_id,
-                }
-                await self._send(
-                    moderator_bot,
-                    html_summary,
-                    parse_mode="HTML",
-                    reply_markup=_rate_keyboard(round_id),
-                )
+                keyboard = _rate_keyboard(round_id)
+                if mod_placeholder:
+                    try:
+                        await moderator_bot.edit_message_text(
+                            chat_id=self.panel_chat_id,
+                            message_id=mod_placeholder.message_id,
+                            text=html_summary,
+                            parse_mode="HTML",
+                            reply_markup=keyboard,
+                        )
+                    except Exception:
+                        await self._send(moderator_bot, html_summary, parse_mode="HTML", reply_markup=keyboard)
+                else:
+                    await self._send(moderator_bot, html_summary, parse_mode="HTML", reply_markup=keyboard)
                 logger.info("Moderator summary: %d chars (round_id=%s)", len(html_summary), round_id)
 
         except Exception as e:
             logger.warning("Moderator (%s) failed: %s", mod.provider, e)
             await self.alerts.send("panel_moderator", f"{type(e).__name__}: {e}")
-            await self._send(moderator_bot, mod.fallback)
+            _fallback = mod.fallback
+            if mod_placeholder:
+                try:
+                    await moderator_bot.edit_message_text(
+                        chat_id=self.panel_chat_id,
+                        message_id=mod_placeholder.message_id,
+                        text=_fallback,
+                    )
+                except Exception:
+                    await self._send(moderator_bot, _fallback)
+            else:
+                await self._send(moderator_bot, _fallback)
 
         # Post-round: extract action items → save memory (best-effort, silent on failure)
         await self._extract_action_items(key, topic)
@@ -1316,6 +1382,19 @@ async def _on_panel_message(
             if not t.cancelled() and t.exception() else None
         )
         _active_round = task
+
+
+def get_panel_ratings_summary() -> dict:
+    """Return 👍/👎 counts from persisted panel_ratings."""
+    if _state_path is None:
+        return {"good": 0, "bad": 0, "total": 0}
+    try:
+        ratings = _state.load(_state_path).get("panel_ratings", [])
+        good = sum(1 for r in ratings if r.get("rating") == "good")
+        bad = sum(1 for r in ratings if r.get("rating") == "bad")
+        return {"good": good, "bad": bad, "total": len(ratings)}
+    except Exception:
+        return {"good": 0, "bad": 0, "total": 0}
 
 
 # ---------------------------------------------------------------------------

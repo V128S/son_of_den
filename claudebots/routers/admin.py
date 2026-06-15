@@ -112,10 +112,11 @@ async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) 
     if message.from_user is None or message.from_user.id != settings.admin_user_id:
         return
     from claudebots.routers.business import _contact_data, _contact_today  # noqa: PLC0415
-    from claudebots.routers.panel import _panel_memories, _panel_topics  # noqa: PLC0415
+    from claudebots.routers.panel import _panel_memories, _panel_topics, get_panel_ratings_summary  # noqa: PLC0415
 
     daily_total = ai_registry.get_daily_total_usage()
     all_total = ai_registry.get_total_usage()
+    ratings = get_panel_ratings_summary()
 
     lines = [
         "📊 Статистика\n",
@@ -123,6 +124,7 @@ async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) 
         f"Активны сегодня: {len(_contact_today)}",
         f"Топики панели: {len(_panel_topics)}",
         f"Памяти панели: {len(_panel_memories)}",
+        f"Оценок раундов: 👍{ratings['good']} 👎{ratings['bad']} (всего {ratings['total']})",
         "",
         f"Токены сегодня: in={daily_total['input']}  out={daily_total['output']}",
         f"Токены всего: in={all_total['input']}  out={all_total['output']}",

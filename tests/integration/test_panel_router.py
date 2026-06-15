@@ -35,14 +35,13 @@ async def test_full_round_calls_each_persona_in_order(
 
     await runner.run_round("Тема: что делать с инфляцией?")
 
-    # Speakers use stream(); only mod summary + action items + memory call complete()
+    # Speakers and moderator use stream(); complete() only for action items + memory
     client = ai_registry_mock.get_client("claude")
-    assert client.complete.await_count == 3
+    assert client.complete.await_count == 2
 
     systems = [c.kwargs["system"] for c in client.complete.await_args_list]
-    assert systems[0] == "mod system"
-    assert "action items" in systems[1].lower() or "выделяй" in systems[1].lower()
-    assert "дискуссии" in systems[2].lower() or "сжимай" in systems[2].lower()
+    assert "action items" in systems[0].lower() or "выделяй" in systems[0].lower()
+    assert "дискуссии" in systems[1].lower() or "сжимай" in systems[1].lower()
 
 
 async def test_each_bot_sends_one_message(personas, conv, ai_registry_mock, bot_mocks, alerts_mock, monkeypatch):
@@ -170,10 +169,17 @@ async def test_moderator_failure_sends_fallback(personas, conv, bot_mocks, alert
 
     await runner.run_round("topic")
 
-    # Find the closing message and check it contains mod fallback
-    closing_call = bot_mocks["moderator"].send_message.await_args_list[-1]
-    sent_text = closing_call.args[1] if len(closing_call.args) > 1 else closing_call.kwargs["text"]
-    assert "mod fallback" in sent_text
+    # Fallback delivered via edit_message_text on the placeholder
+    all_texts = [
+        c.kwargs.get("text", "")
+        for c in bot_mocks["moderator"].edit_message_text.await_args_list
+    ] + [
+        (c.args[1] if len(c.args) > 1 else c.kwargs.get("text", ""))
+        for c in bot_mocks["moderator"].send_message.await_args_list
+    ]
+    assert any("mod fallback" in t for t in all_texts), (
+        f"mod fallback not found in moderator messages: {all_texts}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -340,10 +346,12 @@ async def test_action_items_posted_to_tasks_thread(
     bot_mocks["moderator"].create_forum_topic = AsyncMock(return_value=fake_topic)
 
     client = MagicMock()
-    # Speakers use stream() → no speaker complete() calls.
-    # complete() calls: moderator summary + action items + memory.
+    # _raising_stream ensures all stream() calls fall back to complete().
+    # _PARTICIPANT_COUNT=2 → 2 speaker calls + 1 mod call + action items + memory = 5.
+    client.stream = _raising_stream
     client.complete = AsyncMock(side_effect=[
-        "summary text",                                  # moderator summary
+        "idea A", "idea B",                              # 2 speakers via fallback
+        "summary text",                                  # moderator via fallback
         "1. Изучить рынок\n2. Созвать встречу",          # action items
         "Нужно изучить рынок.",                          # memory
     ])
@@ -386,8 +394,10 @@ async def test_no_action_items_when_ai_says_net(
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
     client = MagicMock()
+    client.stream = _raising_stream
     client.complete = AsyncMock(side_effect=[
-        "summary",              # moderator summary
+        "reply A", "reply B",  # 2 speakers via fallback
+        "summary",              # moderator via fallback
         "нет",                  # action items → none
         "Вывод обсуждения.",    # memory
     ])
@@ -424,8 +434,10 @@ async def test_panel_memory_saved_after_round(
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
     client = MagicMock()
+    client.stream = _raising_stream
     client.complete = AsyncMock(side_effect=[
-        "summary",                  # moderator summary
+        "r1", "r2",                 # 2 speakers via fallback
+        "summary",                  # moderator via fallback
         "нет",                      # action items
         "Главный вывод раунда.",    # memory
     ])
@@ -463,8 +475,9 @@ async def test_panel_memory_capped_at_max(
     monkeypatch.setattr("claudebots.routers.panel._tasks_thread_id", None)
 
     client = MagicMock()
+    client.stream = _raising_stream
     client.complete = AsyncMock(side_effect=[
-        "summary", "нет", "Новый вывод.",
+        "r1", "r2", "summary", "нет", "Новый вывод.",
     ])
     client.usage = {"input": 0, "output": 0, "cache_read": 0}
     ai_registry = AIRegistry({"claude": client})
