@@ -158,6 +158,22 @@ def _rate_keyboard(round_id: str) -> InlineKeyboardMarkup:
     ]])
 
 
+# Instruction sent as the final user turn for the moderator synthesis.
+# The leading Russian-language directive is critical: the panel model (Nemotron)
+# drifts to English — especially on English-language topics — which makes the
+# output bypass the Russian-label parser below and dump raw English under the
+# "📋 Итог дискуссии" header. Forcing Russian here keeps the синтез in Russian.
+_MOD_SUMMARY_INSTRUCTION = (
+    "Подведи итог дискуссии. Пиши ТОЛЬКО на русском языке — метки и весь текст "
+    "строго по-русски, даже если обсуждение шло на другом языке.\n\n"
+    "Ответь СТРОГО в таком формате — каждый пункт на отдельной строке, без лишних слов:\n\n"
+    "ВЫВОД: <главная мысль одним предложением>\n"
+    "ДЕЙСТВИЕ: <конкретно что сделать — одно предложение>\n"
+    "ПОЗИЦИЯ: <кто прав и почему, если было разногласие; иначе: Консенсус>\n\n"
+    "Без markdown. Без вводных фраз. Только три строки."
+)
+
+
 def _parse_mod_sections(text: str) -> dict[str, str]:
     """Extract ВЫВОД / ДЕЙСТВИЕ / ПОЗИЦИЯ labels from structured moderator output."""
     sections: dict[str, str] = {}
@@ -815,14 +831,7 @@ class PanelRoundRunner:
             mod_messages = list(self.conv.get(key))
             mod_messages.append({
                 "role": "user",
-                "content": (
-                    "Подведи итог дискуссии. Ответь СТРОГО в таком формате — "
-                    "каждый пункт на отдельной строке, без лишних слов:\n\n"
-                    "ВЫВОД: <главная мысль одним предложением>\n"
-                    "ДЕЙСТВИЕ: <конкретно что сделать — одно предложение>\n"
-                    "ПОЗИЦИЯ: <кто прав и почему, если было разногласие; иначе: Консенсус>\n\n"
-                    "Без markdown. Без вводных фраз. Только три строки."
-                )
+                "content": _MOD_SUMMARY_INSTRUCTION,
             })
 
             # ── Streaming path ───────────────────────────────────────────────

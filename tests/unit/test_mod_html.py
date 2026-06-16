@@ -2,7 +2,27 @@
 
 import pytest
 
-from claudebots.routers.panel import _format_mod_html, _parse_mod_sections
+from claudebots.routers.panel import (
+    _MOD_SUMMARY_INSTRUCTION,
+    _format_mod_html,
+    _parse_mod_sections,
+)
+
+
+# ---------------------------------------------------------------------------
+# Moderator summary instruction — must force Russian output so the синтез
+# does not drift to English (and break the Russian-label parser below).
+# ---------------------------------------------------------------------------
+
+def test_mod_summary_instruction_enforces_russian():
+    assert "русск" in _MOD_SUMMARY_INSTRUCTION.lower()
+
+
+def test_mod_summary_instruction_keeps_russian_labels():
+    # The parser keys on these exact Russian labels — the instruction must ask for them.
+    assert "ВЫВОД:" in _MOD_SUMMARY_INSTRUCTION
+    assert "ДЕЙСТВИЕ:" in _MOD_SUMMARY_INSTRUCTION
+    assert "ПОЗИЦИЯ:" in _MOD_SUMMARY_INSTRUCTION
 
 
 # ---------------------------------------------------------------------------
