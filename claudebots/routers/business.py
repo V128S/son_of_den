@@ -445,6 +445,27 @@ async def _on_panel_command(
         if not t.cancelled() and t.exception() else None
     )
 
+
+# /help — dedicated handler, MUST be registered before the catch-all
+# _on_private_message below, otherwise that handler swallows /help as a normal
+# owner message and the help text is never shown.
+def _is_help_cmd(text: str | None) -> bool:
+    if not text:
+        return False
+    t = text.strip().lower()
+    return t in ("/help", "help") or t.startswith("/help ") or t.startswith("help ")
+
+
+@business_router.message(
+    F.text.func(_is_help_cmd),
+    F.chat.type.in_({"private", "supergroup"}),
+)
+async def _on_help(message: Message, settings) -> None:
+    if not message.from_user or message.from_user.id != settings.admin_user_id:
+        return
+    await message.answer(_HELP_TEXT, parse_mode="Markdown")
+
+
 @business_router.message(F.text & F.chat.type.in_({"private", "supergroup"}) & ~F.forward_from_chat & ~F.forward_origin)
 async def _on_private_message(
     message: Message,
@@ -1963,23 +1984,6 @@ Shorts и плейлисты не поддерживаются.
 • Ссылку на Google-таблицу контакта с ценами переносит к тебе с наценкой.
 • Вся переписка пишется в Obsidian (`Contacts/*.md`, `Daily/*.md`).
 • Молчащие контакты помечены 🔇 в `/contacts`."""
-
-
-def _is_help_cmd(text: str | None) -> bool:
-    if not text:
-        return False
-    t = text.strip().lower()
-    return t in ("/help", "help") or t.startswith("/help ") or t.startswith("help ")
-
-
-@business_router.message(
-    F.text.func(_is_help_cmd),
-    F.chat.type.in_({"private", "supergroup"}),
-)
-async def _on_help(message: Message, settings) -> None:
-    if not message.from_user or message.from_user.id != settings.admin_user_id:
-        return
-    await message.answer(_HELP_TEXT, parse_mode="Markdown")
 
 # ---------------------------------------------------------------------------
 # Public API for admin router

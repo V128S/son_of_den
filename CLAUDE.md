@@ -36,7 +36,7 @@ bash run_bot.sh
 
 ## Architecture
 
-One Python process, one asyncio event loop, 6 Telegram bots. All bots share a single `Dispatcher` with three routers registered in order: `panel_router` → `business_router` → `admin_router`. Router order matters — panel messages must be checked before business messages.
+One Python process, one asyncio event loop, 6 Telegram bots. All bots share a single `Dispatcher` with three routers registered in order: `panel_router` → `admin_router` → `business_router` (see `ROUTER_ORDER` in `__main__.py`). Router order matters — panel messages must be checked before business messages, and `admin_router`'s `Command()` handlers must come before `business_router`'s catch-all `_on_private_message` (which matches *any* text in private/supergroup and would otherwise swallow `/cost`, `/stats`, `/panelschedule`, …). The business bot's own command handlers (`/panel`, `/help`) are registered before that catch-all within `business_router`.
 
 ### Entry point and dependency injection (`__main__.py`)
 

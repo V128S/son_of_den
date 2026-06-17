@@ -38,6 +38,12 @@ from claudebots.services.yt_downloader import YTDownloader
 
 logger = logging.getLogger(__name__)
 
+# Router order matters: panel first (panel messages before business), then admin
+# so its Command() handlers win over the business catch-all, then business last —
+# its _on_private_message matches ANY text and would otherwise swallow /cost,
+# /stats, /panelschedule, … before admin_router ever sees them.
+ROUTER_ORDER = (panel_router, admin_router, business_router)
+
 
 def _seize_sessions_sync(bots: dict) -> None:
     """Call Telegram close() synchronously to evict any competing bot process."""
@@ -335,7 +341,7 @@ async def amain() -> None:
     dp.workflow_data.update(workflow)
 
     # Panel router must be first to handle panel messages before business router
-    dp.include_routers(panel_router, business_router, admin_router)
+    dp.include_routers(*ROUTER_ORDER)
 
     @dp.error()
     async def on_error(event: ErrorEvent) -> bool:
