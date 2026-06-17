@@ -97,34 +97,40 @@ _pending_rate: dict[str, dict] = {}
 _tasks_thread_id: int | None = None
 
 # Instruction appended to every speaker turn — extracted to avoid repetition
+# Restated at the end of every immediate speaker turn. The panel model
+# (Nemotron) drifts to English on English-language topics despite the
+# "Только русский язык" rule in the system prompt; repeating the directive in
+# the last user turn (what the model weighs most) keeps every reply in Russian.
+_RU_DIRECTIVE = " Отвечай ТОЛЬКО на русском языке, даже если сообщения выше на английском."
+
 _SPEAKER_TURN_INSTRUCTION = (
     "{name}, выскажи своё мнение — 2-3 предложения, живым языком. "
     "Говори от себя, как независимый наблюдатель. "
     "Не нужно соглашаться со всеми — у тебя свой взгляд. "
     "Без заголовков и маркированных списков."
-)
+) + _RU_DIRECTIVE
 
 # Revival-specific instructions — casual, spontaneous feel
 _REVIVAL_INITIATOR_INSTRUCTION = (
     "{name}, у тебя появилась новая мысль по прошлой теме — как будто только что дошло. "
     "Вырази её коротко и неформально, 1-2 предложения. "
     "Не объясняй, что «возвращаешься к теме» — просто скажи мысль. Без markdown."
-)
+) + _RU_DIRECTIVE
 
 _REVIVAL_RESPONDER_INSTRUCTION = (
     "{name}, видишь что написали — и у тебя есть своя реакция. "
     "1-2 предложения, по делу, от себя. Без markdown."
-)
+) + _RU_DIRECTIVE
 
 # Debate-round instructions — personas directly address each other
 _DEBATE_INITIATOR_INSTRUCTION = (
     "{name}, обращайся напрямую к {opponent}: укажи конкретно, с чем именно не согласен "
     "и почему твоя позиция сильнее. 1-2 предложения, без markdown."
-)
+) + _RU_DIRECTIVE
 _DEBATE_RESPONDER_INSTRUCTION = (
     "{name}, {initiator} оспорил твою позицию. Ответь конкретно: "
     "либо признай слабое место, либо парируй. 1-2 предложения, без markdown."
-)
+) + _RU_DIRECTIVE
 
 
 def clean_markdown(text: str) -> str:
@@ -187,48 +193,52 @@ def _parse_mod_sections(text: str) -> dict[str, str]:
 
 
 def _format_mod_html(raw: str) -> str:
-    """Render the moderator summary as Telegram HTML using blockquotes and rich tags.
+    """Render the moderator summary as Telegram HTML using rich text formatting.
 
-    Uses <blockquote> for the key conclusion and <blockquote expandable> (Bot API 7.9+)
-    for the collapsible details block (recommendation + position).
+    Layout (parse_mode=HTML):
+    - Bold + underlined header (<b><u>…</u></b>).
+    - <blockquote> with the key conclusion in bold.
+    - <blockquote expandable> (Bot API 7.9+) with the details: the action in
+      italic, and the verdict ("кто прав") hidden behind a <tg-spoiler> so it
+      reveals on tap. Consensus shows a plain italic line instead (no winner).
     Falls back to a plain blockquote if the AI didn't follow the structured format.
     """
     import html as _h
+
+    header = "📋 <b><u>Итог дискуссии</u></b>"
+    footer = "🎤 <i>Жду следующую тему.</i>"
 
     sections = _parse_mod_sections(raw)
 
     if not sections:
         safe = _h.escape(raw.strip())
-        return (
-            "📋 <b>Итог дискуссии</b>\n\n"
-            f"<blockquote>{safe}</blockquote>\n\n"
-            "🎤 <i>Жду следующую тему.</i>"
-        )
+        return f"{header}\n\n<blockquote>{safe}</blockquote>\n\n{footer}"
 
-    parts: list[str] = ["📋 <b>Итог дискуссии</b>"]
+    parts: list[str] = [header]
 
     conclusion = _h.escape(sections.get("ВЫВОД", ""))
     if conclusion:
-        parts.append(f"<blockquote>💡 {conclusion}</blockquote>")
+        parts.append(f"<blockquote>💡 <b>{conclusion}</b></blockquote>")
 
     detail_lines: list[str] = []
 
     action = _h.escape(sections.get("ДЕЙСТВИЕ", ""))
     if action:
-        detail_lines.append(f"✅ <b>Что делать</b>\n{action}")
+        detail_lines.append(f"✅ <b>Что делать</b>\n<i>{action}</i>")
 
     position = _h.escape(sections.get("ПОЗИЦИЯ", ""))
     if position:
         if "консенсус" in position.lower():
             detail_lines.append("🤝 <i>Консенсус достигнут</i>")
         else:
-            detail_lines.append(f"⚖️ <b>Позиция</b>\n{position}")
+            # Hide the verdict behind a spoiler — reveals on tap.
+            detail_lines.append(f"⚖️ <b>Кто прав</b>\n<tg-spoiler>{position}</tg-spoiler>")
 
     if detail_lines:
         inner = "\n\n".join(detail_lines)
         parts.append(f"<blockquote expandable>{inner}</blockquote>")
 
-    parts.append("🎤 <i>Жду следующую тему.</i>")
+    parts.append(footer)
     return "\n\n".join(parts)
 
 
