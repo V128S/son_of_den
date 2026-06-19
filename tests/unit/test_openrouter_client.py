@@ -1,6 +1,5 @@
 """Unit tests for OpenRouterClient helpers."""
 
-import pytest
 
 from claudebots.core.openrouter_client import _strip_thinking
 

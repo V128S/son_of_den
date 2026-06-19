@@ -3,8 +3,12 @@ import logging
 import random
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from claudebots.core.personas import Persona
 
 from aiogram import Bot, F, Router
 from aiogram.types import (
@@ -14,11 +18,11 @@ from aiogram.types import (
     Message,
 )
 
+from claudebots.core import state as _state
 from claudebots.core.ai_registry import AIRegistry
 from claudebots.core.alerts import AlertSender
 from claudebots.core.conversation import ConversationStore
 from claudebots.core.personas import PersonaRegistry
-from claudebots.core import state as _state
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +75,10 @@ TYPING_DELAY_MIN: float = 5.0    # composing time — typing indicator visible (
 TYPING_DELAY_MAX: float = 12.0   # —
 REVIVAL_DELAY_MIN: float = 20.0  # seconds for revival continuation (min)
 REVIVAL_DELAY_MAX: float = 50.0  # seconds for revival continuation (max)
+SLOW_DELAY_MIN: float = 120.0    # silent pause between speakers in slow news round (s)
+SLOW_DELAY_MAX: float = 420.0    # —
+SLOW_INITIAL_DELAY_MIN: float = 60.0  # delay before the first speaker in slow round (s)
+SLOW_INITIAL_DELAY_MAX: float = 240.0 # —
 
 # Revival settings
 REVIVAL_INTERVAL_SECONDS = 7_200  # Default: every 2 hours
@@ -151,7 +159,7 @@ def clean_markdown(text: str) -> str:
 
 def _make_round_id() -> str:
     """Generate a unique ID for a panel round (used as callback_data key)."""
-    ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+    ts = int(datetime.now(UTC).timestamp() * 1000)
     return f"{ts}_{random.randint(100, 999)}"
 
 
@@ -694,8 +702,9 @@ class PanelRoundRunner:
             logger.warning("Revival persona %s (%s) failed: %s", persona.id, persona.provider, e)
             return False
 
-    async def run_round(self, topic: str) -> None:
+    async def run_round(self, topic: str, *, slow: bool = False) -> None:
         global _last_thread_id
+        mod = self.personas.moderator
         key = self._key()
 
         # Track thread for revival
@@ -758,14 +767,21 @@ class PanelRoundRunner:
                 weights=[1, 3, 3, 2],
             )[0]
         active = all_speakers[:n]
-        logger.info("Round participants (%d/%d): %s", n, len(all_speakers), [p.id for p in active])
+        logger.info("Round participants (%d/%d): %s (slow=%s)", n, len(all_speakers), [p.id for p in active], slow)
 
         sent = 0
         successful: list = []  # track which personas spoke successfully
         for i, persona in enumerate(active):
-            # Silent reading pause before every speaker except the first.
-            if i > 0:
-                silent = random.uniform(SILENT_DELAY_MIN, SILENT_DELAY_MAX)
+            # Silent reading pause before speaker. In slow mode, even the first speaker waits a random delay.
+            if i > 0 or slow:
+                if slow:
+                    # Slow initial delay for first speaker, slow delay for subsequent ones
+                    if i == 0:
+                        silent = random.uniform(SLOW_INITIAL_DELAY_MIN, SLOW_INITIAL_DELAY_MAX)
+                    else:
+                        silent = random.uniform(SLOW_DELAY_MIN, SLOW_DELAY_MAX)
+                else:
+                    silent = random.uniform(SILENT_DELAY_MIN, SILENT_DELAY_MAX)
                 logger.debug("Silent pause %.0f s before %s speaks", silent, persona.id)
                 await asyncio.sleep(silent)
 
@@ -779,9 +795,9 @@ class PanelRoundRunner:
 
         # ── Debate mini-round (Feature 1) ────────────────────────────────────
         # When ≥ 2 speakers succeeded, run one direct exchange. Probability is
-        # 50% in production; can be overridden to True/False for tests.
+        # 50% in production; can be overridden to True/False for tests. Skip in slow mode.
         _debate_roll = _DEBATE_ENABLED if _DEBATE_ENABLED is not None else (random.random() < 0.5)
-        if len(successful) >= 2 and _debate_roll:
+        if len(successful) >= 2 and _debate_roll and not slow:
             await asyncio.sleep(random.uniform(SILENT_DELAY_MIN / 2, SILENT_DELAY_MAX / 2))
             # Ask the cheapest available AI to pick the two most-opposed personas.
             try:
@@ -822,7 +838,10 @@ class PanelRoundRunner:
         if mod is None:
             return
 
-        await asyncio.sleep(random.uniform(SILENT_DELAY_MIN, SILENT_DELAY_MAX))
+        if slow:
+            await asyncio.sleep(random.uniform(SLOW_DELAY_MIN, SLOW_DELAY_MAX))
+        else:
+            await asyncio.sleep(random.uniform(SILENT_DELAY_MIN, SILENT_DELAY_MAX))
 
         # Send placeholder immediately so admin sees the moderator "thinking"
         mod_placeholder = None
@@ -974,7 +993,7 @@ class PanelRoundRunner:
             # Schedule a reminder 18-20 h later
             if _state_path is not None:
                 remind_ts = (
-                    datetime.now(timezone.utc).timestamp()
+                    datetime.now(UTC).timestamp()
                     + random.uniform(REMINDER_MIN_HOURS * 3600, REMINDER_MAX_HOURS * 3600)
                 )
                 data = _state.load(_state_path)
@@ -988,7 +1007,7 @@ class PanelRoundRunner:
                 _state.update(_state_path, {"pending_reminders": pending})
                 logger.info(
                     "Task reminder scheduled in %.0f h (thread=%s)",
-                    (remind_ts - datetime.now(timezone.utc).timestamp()) / 3600,
+                    (remind_ts - datetime.now(UTC).timestamp()) / 3600,
                     tid,
                 )
 
@@ -1021,7 +1040,7 @@ class PanelRoundRunner:
                 entry = {
                     "text": memory,
                     "topic": topic,
-                    "ts": datetime.now(timezone.utc).timestamp(),
+                    "ts": datetime.now(UTC).timestamp(),
                 }
                 _panel_memories.append(entry)
                 if len(_panel_memories) > PANEL_MEMORY_MAX:
@@ -1179,7 +1198,7 @@ async def _fire_due_reminders(bots: dict, panel_chat_id: int) -> None:
     if not pending:
         return
 
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     still_pending: list[dict] = []
 
     for reminder in pending:
@@ -1257,7 +1276,6 @@ def _find_persona_for_bot_user_id(
     bot_user_id: int,
 ) -> "tuple[Bot, Persona] | None":
     """Return (bot, persona) if bot_user_id matches a panel bot, else None."""
-    from claudebots.core.personas import Persona
     for bot_key, bot in bots.items():
         if bot_key == "business":
             continue
@@ -1311,7 +1329,7 @@ async def _handle_direct_reply(
         response = persona.fallback
 
     try:
-        sent = await reply_bot.send_message(
+        await reply_bot.send_message(
             chat_id=message.chat.id,
             text=response,
             message_thread_id=message.message_thread_id,
@@ -1584,10 +1602,11 @@ async def _on_panel_rate(
 
     if action in ("good", "bad"):
         label = "👍 Полезно" if action == "good" else "👎 Вода"
-        try:
-            await cb.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        if isinstance(cb.message, Message):
+            try:
+                await cb.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
         await cb.answer(label, show_alert=False)
         # Persist rating
         if _state_path is not None:
@@ -1596,7 +1615,7 @@ async def _on_panel_rate(
                 "round_id": round_id,
                 "rating": action,
                 "topic": topic,
-                "ts": datetime.now(timezone.utc).timestamp(),
+                "ts": datetime.now(UTC).timestamp(),
             })
             _state.update(_state_path, {"panel_ratings": existing[-200:]})
         _pending_rate.pop(round_id, None)
@@ -1605,10 +1624,11 @@ async def _on_panel_rate(
     elif action == "deepen":
         thread_id = pending.get("thread_id") if pending else None
         _pending_rate.pop(round_id, None)
-        try:
-            await cb.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        if isinstance(cb.message, Message):
+            try:
+                await cb.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
         await cb.answer("🔁 Запускаю углублённый раунд…", show_alert=False)
 
         runner = PanelRoundRunner(

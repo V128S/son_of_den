@@ -1,7 +1,5 @@
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from claudebots.core.ai_registry import AIRegistry, FallbackClient
 
 

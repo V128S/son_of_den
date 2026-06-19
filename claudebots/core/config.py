@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     # How often the panel bots spontaneously revive past discussions (hours).
     # Set to 0 to disable the revival scheduler entirely.
-    panel_revival_interval_hours: float = 2.0
+    panel_revival_interval_hours: float = 0.0
 
     # Time of day to send the daily contact digest (HH:MM in user_timezone).
     # Set to empty string to disable.

@@ -10,6 +10,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class GoogleSheetsClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_service(self):
+    def _get_service(self) -> Any:
         """Lazy-load the Sheets API service (cached after first call)."""
         if self._service is not None:
             return self._service
@@ -58,10 +59,10 @@ class GoogleSheetsClient:
             return None
         try:
             from google.oauth2 import service_account
-            from googleapiclient.discovery import build
+            from googleapiclient.discovery import build  # type: ignore[import-untyped]
 
             scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-            creds = service_account.Credentials.from_service_account_file(
+            creds = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
                 str(self.service_account_file), scopes=scopes
             )
             self._service = build("sheets", "v4", credentials=creds, cache_discovery=False)
@@ -83,7 +84,10 @@ class GoogleSheetsClient:
                 .get(spreadsheetId=sheet_id, range=range_)
                 .execute()
             )
-            return result.get("values", [])
+            vals = result.get("values", [])
+            if not vals:
+                return []
+            return [[str(x) for x in row] for row in vals]
         except Exception as e:
             logger.warning("Sheets: read failed for %s: %s", sheet_id, e)
             return []
@@ -157,7 +161,7 @@ class GoogleSheetsClient:
                 .execute()
             )
             updates = result.get("updates", {})
-            written = updates.get("updatedRows", len(rows))
+            written = int(updates.get("updatedRows", len(rows)))
             logger.info("Sheets: wrote %d rows to personal sheet.", written)
             return written
         except Exception as e:
@@ -186,7 +190,7 @@ class GoogleSheetsClient:
                 )
                 .execute()
             )
-            return result.get("updates", {}).get("updatedRows", len(rows))
+            return int(result.get("updates", {}).get("updatedRows", len(rows)))
         except Exception as e:
             logger.warning("Sheets: write to %s failed: %s", sheet_id, e)
             return 0
@@ -210,7 +214,7 @@ class GoogleSheetsClient:
                 timeout=timeout,
             )
             return written > 0
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Sheets: expense write timed out")
             return False
 
@@ -227,7 +231,7 @@ class GoogleSheetsClient:
                 loop.run_in_executor(None, self._read_sheet_sync, source_sheet_id),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Sheets: read timed out for %s", source_sheet_id)
             return 0, 0
 
@@ -241,7 +245,7 @@ class GoogleSheetsClient:
                 loop.run_in_executor(None, self._write_rows_sync, marked_rows),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Sheets: write timed out")
             return len(rows), 0
 

@@ -4,7 +4,6 @@ import pytest
 
 from claudebots.routers.panel import PanelRoundRunner
 
-
 # ---------------------------------------------------------------------------
 # Helper: stream that raises immediately so _speak() falls back to complete()
 # ---------------------------------------------------------------------------
@@ -332,8 +331,9 @@ async def test_action_items_posted_to_tasks_thread(
 ):
     """When AI returns action items, moderator posts them to the tasks thread."""
     from unittest.mock import AsyncMock, MagicMock
-    from claudebots.core.ai_registry import AIRegistry
+
     import claudebots.routers.panel as panel_mod
+    from claudebots.core.ai_registry import AIRegistry
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
@@ -386,8 +386,9 @@ async def test_no_action_items_when_ai_says_net(
 ):
     """When AI responds 'нет', no message is posted to the tasks thread."""
     from unittest.mock import AsyncMock, MagicMock
-    from claudebots.core.ai_registry import AIRegistry
+
     import claudebots.routers.panel as panel_mod
+    from claudebots.core.ai_registry import AIRegistry
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
@@ -425,8 +426,9 @@ async def test_panel_memory_saved_after_round(
 ):
     """After a round, _panel_memories grows by one entry."""
     from unittest.mock import AsyncMock, MagicMock
-    from claudebots.core.ai_registry import AIRegistry
+
     import claudebots.routers.panel as panel_mod
+    from claudebots.core.ai_registry import AIRegistry
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
@@ -464,8 +466,9 @@ async def test_panel_memory_capped_at_max(
 ):
     """_panel_memories never exceeds PANEL_MEMORY_MAX entries."""
     from unittest.mock import AsyncMock, MagicMock
-    from claudebots.core.ai_registry import AIRegistry
+
     import claudebots.routers.panel as panel_mod
+    from claudebots.core.ai_registry import AIRegistry
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 2)
     monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)
@@ -499,9 +502,10 @@ async def test_memory_injected_into_next_round_context(
     personas, conv, bot_mocks, alerts_mock, monkeypatch
 ):
     """When _panel_memories is non-empty, discussion context starts with memory block."""
-    from unittest.mock import AsyncMock, MagicMock
-    from claudebots.core.ai_registry import AIRegistry
+    from unittest.mock import MagicMock
+
     import claudebots.routers.panel as panel_mod
+    from claudebots.core.ai_registry import AIRegistry
 
     monkeypatch.setattr("claudebots.routers.panel._PARTICIPANT_COUNT", 1)
     monkeypatch.setattr("claudebots.routers.panel._DEBATE_ENABLED", False)

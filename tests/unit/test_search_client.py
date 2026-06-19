@@ -2,8 +2,6 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from claudebots.services.search_client import SearchClient, SearchResult
 
 

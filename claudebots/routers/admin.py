@@ -6,7 +6,6 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from claudebots.core.ai_registry import AIRegistry
-from claudebots.core.alerts import AlertSender
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
 from claudebots.core.personas import PersonaRegistry, load_personas
@@ -113,7 +112,11 @@ async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) 
     if message.from_user is None or message.from_user.id != settings.admin_user_id:
         return
     from claudebots.routers.business import _contact_data, _contact_today  # noqa: PLC0415
-    from claudebots.routers.panel import _panel_memories, _panel_topics, get_panel_ratings_summary  # noqa: PLC0415
+    from claudebots.routers.panel import (  # noqa: PLC0415
+        _panel_memories,
+        _panel_topics,
+        get_panel_ratings_summary,
+    )
 
     daily_total = ai_registry.get_daily_total_usage()
     all_total = ai_registry.get_total_usage()
@@ -256,7 +259,11 @@ async def _panelschedule(
         )
         return
 
-    from claudebots.routers.panel import schedule_panel_round, get_scheduled_panel, _last_thread_id  # noqa: PLC0415
+    from claudebots.routers.panel import (  # noqa: PLC0415
+        _last_thread_id,
+        get_scheduled_panel,
+        schedule_panel_round,
+    )
 
     # Warn if replacing an existing schedule
     existing = get_scheduled_panel()
@@ -287,7 +294,10 @@ async def _panelschedule(
 async def _panelcancel(message: Message, settings: Settings) -> None:
     if message.from_user is None or message.from_user.id != settings.admin_user_id:
         return
-    from claudebots.routers.panel import cancel_scheduled_panel, get_scheduled_panel  # noqa: PLC0415
+    from claudebots.routers.panel import (  # noqa: PLC0415
+        cancel_scheduled_panel,
+        get_scheduled_panel,
+    )
     info = get_scheduled_panel()
     if cancel_scheduled_panel():
         topic = info["topic"][:60] if info else "—"

@@ -1,9 +1,6 @@
 """Tests for core/state.py — bot state persistence."""
 
 import json
-from pathlib import Path
-
-import pytest
 
 from claudebots.core.state import (
     decode_int_keys,
@@ -12,7 +9,6 @@ from claudebots.core.state import (
     save,
     update,
 )
-
 
 # ---------------------------------------------------------------------------
 # load / save / update

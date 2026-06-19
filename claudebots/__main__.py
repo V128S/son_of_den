@@ -13,7 +13,8 @@ from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.claude_client import ClaudeClient
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
-from claudebots.core.feed_monitor import start_digest_scheduler as start_feed_digest, start_feed_monitor
+from claudebots.core.feed_monitor import start_digest_scheduler as start_feed_digest
+from claudebots.core.feed_monitor import start_feed_monitor
 from claudebots.core.gemini_client import GeminiClient
 from claudebots.core.groq_client import GroqClient
 from claudebots.core.meters_client import MetersClient
@@ -23,8 +24,13 @@ from claudebots.core.personas import load_personas
 from claudebots.core.sheets_client import GoogleSheetsClient
 from claudebots.routers.admin import PersonaHolder, admin_router
 from claudebots.routers.briefing import start_briefing_scheduler
+from claudebots.routers.business import (
+    business_router,
+    check_followup_contacts,
+    init_business_state,
+    start_digest_scheduler,
+)
 from claudebots.routers.daily_news import start_daily_news_panel
-from claudebots.routers.business import business_router, check_followup_contacts, init_business_state, start_digest_scheduler
 from claudebots.routers.panel import (
     init_panel_state,
     panel_router,
@@ -95,7 +101,7 @@ async def _followup_monitor(business_bot, followup_days: int) -> None:
 async def _budget_monitor(ai_registry, bot, admin_user_id: int, budget_usd: float) -> None:
     """Check daily token cost every hour; send one alert per day if over budget."""
     from datetime import UTC, date, datetime
-    last_alert_date: "date | None" = None
+    last_alert_date: date | None = None
     while True:
         await asyncio.sleep(3600)
         today = datetime.now(UTC).date()

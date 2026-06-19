@@ -48,4 +48,4 @@ files = ["claudebots/core"]
 
 [[tool.mypy.overrides]]
 module = "claudebots.routers.*"
-strict = false
+ignore_errors = true

@@ -1,12 +1,8 @@
 """Unit tests for the daily news panel module."""
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from claudebots.routers.daily_news import _build_news_topic, _fetch_headlines
-
+from claudebots.routers.daily_news import _build_news_topic, _fetch_headlines, _select_main_news
 
 # ---------------------------------------------------------------------------
 # _fetch_headlines
@@ -89,7 +85,7 @@ async def test_build_news_topic_with_headlines():
         timezone_str="Europe/Moscow",
         search_client=sc,
     )
-    assert "📰 Новостной обзор" in topic
+    assert "📰 Главные новости дня" in topic
     assert "OpenAI launches X" in topic
     assert "Market surge" in topic
     assert "AI, финансы" in topic
@@ -101,13 +97,12 @@ async def test_build_news_topic_fallback_when_no_search():
         timezone_str="Europe/Moscow",
         search_client=None,
     )
-    assert "📰 Новостной обзор" in topic
+    assert "📰 Главные новости дня" in topic
     assert "AI, бизнес" in topic
-    # No bullet-point headlines in fallback
     assert "•" not in topic or "Обсудите" in topic
 
 
-async def test_build_news_topic_limits_to_5_headlines():
+async def test_build_news_topic_limits_to_fallback():
     headlines = [MagicMock(title=f"News {i}") for i in range(10)]
     sc = MagicMock()
     sc.enabled = True
@@ -118,6 +113,43 @@ async def test_build_news_topic_limits_to_5_headlines():
         timezone_str="Europe/Moscow",
         search_client=sc,
     )
-    # Only headlines 0-4 should appear
-    assert "News 4" in topic
-    assert "News 5" not in topic
+    # Fallback limits to 2 headlines when ai_registry is None
+    assert "News 1" in topic
+    assert "News 2" not in topic
+
+
+async def test_select_main_news_with_ai():
+    headlines = ["OpenAI releases GPT-5", "Apple vision pro sales", "Tech stock crash"]
+    ai_registry = MagicMock()
+    client = AsyncMock()
+    client.complete = AsyncMock(return_value="1. **OpenAI releases GPT-5**\n   Great new model.")
+    ai_registry.has_provider = MagicMock(return_value=True)
+    ai_registry.get_client = MagicMock(return_value=client)
+
+    result = await _select_main_news(headlines, ai_registry)
+    assert "OpenAI releases GPT-5" in result
+    assert "Great new model." in result
+    client.complete.assert_called_once()
+
+
+async def test_build_news_topic_with_ai_selection():
+    r1 = MagicMock(title="OpenAI releases GPT-5")
+    sc = MagicMock()
+    sc.enabled = True
+    sc.search = AsyncMock(return_value=[r1])
+
+    ai_registry = MagicMock()
+    client = AsyncMock()
+    client.complete = AsyncMock(return_value="1. **OpenAI releases GPT-5**\n   Great new model.")
+    ai_registry.has_provider = MagicMock(return_value=True)
+    ai_registry.get_client = MagicMock(return_value=client)
+
+    topic = await _build_news_topic(
+        interests="AI",
+        timezone_str="Europe/Moscow",
+        search_client=sc,
+        ai_registry=ai_registry,
+    )
+    assert "📰 Главные новости дня" in topic
+    assert "OpenAI releases GPT-5" in topic
+    assert "Great new model." in topic

@@ -68,7 +68,7 @@ class SocialDownloader:
                 timeout=self.timeout,
             )
             return files
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Social download timed out: %s", url)
             return []
         except Exception as e:

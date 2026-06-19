@@ -18,6 +18,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ def looks_like_meter_message(text: str) -> bool:
     return bool(_METER_KEYWORDS.search(text))
 
 
-async def extract_meter_readings(text: str, ai_registry) -> dict | None:
+async def extract_meter_readings(text: str, ai_registry: Any) -> dict[str, Any] | None:
     """Ask AI to extract meter values from free-form text.
 
     Returns a dict with some of these keys (None if not mentioned):
@@ -71,8 +72,7 @@ async def extract_meter_readings(text: str, ai_registry) -> dict | None:
         if raw.lower().startswith("нет") or raw.lower() == "no":
             return None
         data = json.loads(raw)
-        # Return only if at least one value is present
-        if any(data.get(k) is not None for k in ("gas", "water", "electricity_day", "electricity_night")):
+        if isinstance(data, dict) and any(data.get(k) is not None for k in ("gas", "water", "electricity_day", "electricity_night")):
             return data
         return None
     except Exception as e:
@@ -101,7 +101,7 @@ class MetersClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_service(self):
+    def _get_service(self) -> Any:
         if self._service is not None:
             return self._service
         if not self.service_account_file or not self.service_account_file.exists():
@@ -109,8 +109,8 @@ class MetersClient:
             return None
         try:
             from google.oauth2 import service_account
-            from googleapiclient.discovery import build
-            creds = service_account.Credentials.from_service_account_file(
+            from googleapiclient.discovery import build  # type: ignore[import-untyped]
+            creds = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
                 str(self.service_account_file),
                 scopes=["https://www.googleapis.com/auth/spreadsheets"],
             )
@@ -120,7 +120,7 @@ class MetersClient:
             logger.error("MetersClient: failed to init Sheets service: %s", e)
             return None
 
-    def _get_last_row_num(self, svc, sheet_name: str) -> int:
+    def _get_last_row_num(self, svc: Any, sheet_name: str) -> int:
         """Return the 1-based index of the last row with data (including header)."""
         try:
             result = (
@@ -134,7 +134,7 @@ class MetersClient:
             logger.warning("MetersClient: get_last_row failed (%s): %s", sheet_name, e)
             return 1
 
-    def _append_row(self, svc, sheet_name: str, row: list) -> bool:
+    def _append_row(self, svc: Any, sheet_name: str, row: list[Any]) -> bool:
         """Append one row to the sheet tab. Returns True on success."""
         try:
             svc.spreadsheets().values().append(
@@ -203,7 +203,7 @@ class MetersClient:
     # Public async API
     # ------------------------------------------------------------------
 
-    async def save_readings(self, readings: dict, timeout: float = 15.0) -> dict:
+    async def save_readings(self, readings: dict[str, Any], timeout: float = 15.0) -> dict[str, Any]:
         """Write all non-null readings to their respective sheet tabs.
 
         Returns a dict: {sheet_name: True/False} for each sheet written.
@@ -211,7 +211,7 @@ class MetersClient:
         loop = asyncio.get_running_loop()
         now = datetime.now(self.tz)
         date_str = now.strftime("%d.%m.%Y")
-        results: dict[str, bool] = {}
+        results: dict[str, bool | None] = {}
 
         if readings.get("gas") is not None:
             try:
@@ -220,7 +220,7 @@ class MetersClient:
                     timeout=timeout,
                 )
                 results["Gas"] = ok
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 results["Gas"] = False
 
         if readings.get("water") is not None:
@@ -230,7 +230,7 @@ class MetersClient:
                     timeout=timeout,
                 )
                 results["Water"] = ok
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 results["Water"] = False
 
         if readings.get("electricity_day") is not None and readings.get("electricity_night") is not None:
@@ -246,7 +246,7 @@ class MetersClient:
                     timeout=timeout,
                 )
                 results["Electricity"] = ok
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 results["Electricity"] = False
         elif readings.get("electricity_day") is not None or readings.get("electricity_night") is not None:
             # Only one of the two — can't write incomplete electricity row
@@ -254,7 +254,7 @@ class MetersClient:
 
         return results
 
-    def format_confirmation(self, readings: dict, results: dict) -> str:
+    def format_confirmation(self, readings: dict[str, Any], results: dict[str, Any]) -> str:
         """Build a human-readable confirmation message."""
         lines = ["✅ Показания записаны в таблицу:"]
         emojis = {"Gas": "🔥", "Water": "💧", "Electricity": "⚡"}

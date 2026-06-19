@@ -1,11 +1,9 @@
 """Unit tests for admin router commands."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from claudebots.routers.admin import handle_cost, handle_ping, handle_reset
 import claudebots.routers.panel as panel_mod
+from claudebots.routers.admin import handle_cost, handle_ping, handle_reset
 
 
 def _make_message(user_id: int = 42, chat_id: int = 42, text: str = "/ping") -> MagicMock:
@@ -96,8 +94,9 @@ async def test_panelfind_empty_query_shows_usage():
 
 
 async def test_cost_shows_daily_and_alltime():
-    from claudebots.core.ai_registry import AIRegistry
     from unittest.mock import MagicMock
+
+    from claudebots.core.ai_registry import AIRegistry
 
     client = MagicMock()
     client.usage = {"input": 5000, "output": 2000, "cache_read": 1000}
@@ -147,8 +146,9 @@ async def test_panelworst_non_admin_ignored():
 
 
 async def test_panelbest_shows_rounds_with_memory(tmp_path, monkeypatch):
-    from claudebots.routers.admin import _panelbest
     import time
+
+    from claudebots.routers.admin import _panelbest
 
     ts = time.time()
     panel_mod._panel_memories.clear()
@@ -169,8 +169,10 @@ async def test_panelbest_shows_rounds_with_memory(tmp_path, monkeypatch):
 
 
 async def test_panelworst_shows_bad_rounds(tmp_path, monkeypatch):
+    import json
+    import time
+
     from claudebots.routers.admin import _panelworst
-    import time, json
 
     ts = time.time()
     panel_mod._panel_memories.clear()
@@ -228,8 +230,8 @@ async def test_panelschedule_bad_time_format():
 
 
 async def test_panelschedule_creates_task(monkeypatch):
-    from claudebots.routers.admin import _panelschedule
     import claudebots.routers.panel as panel_mod
+    from claudebots.routers.admin import _panelschedule
 
     scheduled_calls: list = []
 
@@ -255,8 +257,8 @@ async def test_panelschedule_creates_task(monkeypatch):
 
 
 async def test_panelcancel_when_no_schedule():
-    from claudebots.routers.admin import _panelcancel
     import claudebots.routers.panel as panel_mod
+    from claudebots.routers.admin import _panelcancel
 
     panel_mod._scheduled_task = None
     panel_mod._scheduled_info = None
@@ -268,8 +270,8 @@ async def test_panelcancel_when_no_schedule():
 
 
 async def test_panelcancel_cancels_existing(monkeypatch):
-    from claudebots.routers.admin import _panelcancel
     import claudebots.routers.panel as panel_mod
+    from claudebots.routers.admin import _panelcancel
 
     cancelled = [False]
 

@@ -2,10 +2,11 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from googleapiclient.discovery import build  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class GoogleCalendarClient:
         self._cache_time: float | None = None
         self._cache_ttl = cache_ttl_seconds
 
-    def _get_service(self):
+    def _get_service(self) -> Any:
         """Lazy loader for Google Calendar API service instance."""
         if self._service is not None:
             return self._service
@@ -54,7 +55,7 @@ class GoogleCalendarClient:
 
         try:
             scopes = ["https://www.googleapis.com/auth/calendar.events"]
-            creds = service_account.Credentials.from_service_account_file(
+            creds = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
                 str(self.service_account_file), scopes=scopes
             )
             self._service = build("calendar", "v3", credentials=creds, cache_discovery=False)
@@ -96,7 +97,7 @@ class GoogleCalendarClient:
             return "Нет запланированных событий на ближайшие дни."
 
         # Group events by day
-        formatted_days = {}
+        formatted_days: dict[Any, list[str]] = {}
         for event in events:
             start_raw = event["start"].get("dateTime") or event["start"].get("date")
             end_raw = event["end"].get("dateTime") or event["end"].get("date")
@@ -187,7 +188,7 @@ class GoogleCalendarClient:
             self._cache = summary
             self._cache_time = now
             return summary
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Google Calendar fetch timed out. Proceeding without calendar.")
             if self._cache is not None:
                 logger.info("Returning stale cache after timeout.")
@@ -241,7 +242,7 @@ class GoogleCalendarClient:
                 )
                 link = created.get("htmlLink")
                 logger.info("Calendar event created: %s — %s", summary, link)
-                return link
+                return str(link) if link else None
             except Exception as e:
                 logger.warning("Calendar create_event failed: %s", e)
                 return None
@@ -251,7 +252,7 @@ class GoogleCalendarClient:
                 loop.run_in_executor(None, _create),
                 timeout=10.0,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Calendar create_event timed out.")
             return None
 

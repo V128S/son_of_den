@@ -1,6 +1,5 @@
 """Unit tests for claudebots.core.feed_monitor."""
-import asyncio
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,9 +8,7 @@ from claudebots.core.feed_monitor import (
     FeedMonitor,
     _parse_rss,
     _strip_html,
-    start_feed_monitor,
 )
-
 
 # ---------------------------------------------------------------------------
 # _strip_html
@@ -127,7 +124,6 @@ def test_parse_atom_strips_html_in_content():
 # ---------------------------------------------------------------------------
 
 def _make_monitor(tmp_path, *, channels=None, max_per_day=2, min_score=7):
-    from claudebots.core.feed_monitor import FeedMonitor
 
     if channels is None:
         channels = ["testchan"]
@@ -186,7 +182,7 @@ async def test_daily_limit_prevents_extra_rounds(tmp_path):
 async def test_min_interval_blocks_run(tmp_path):
     """run_once() does nothing if last run was less than 4 hours ago."""
     monitor = _make_monitor(tmp_path)
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     from claudebots.core import state as _state
     _state.update(
         monitor._state_path,
@@ -215,7 +211,7 @@ async def test_seen_dedup_skips_known_url(tmp_path):
             "feed_last_run_ts": 0.0,
         },
     )
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     fake_entries = [("https://t.me/testchan/1", "Title", "Body", now - 100)]
     with (
         patch.object(monitor, "_fetch_entries", return_value=fake_entries),
@@ -238,12 +234,15 @@ async def test_midnight_reset_clears_daily_count(tmp_path):
             "feed_last_run_ts": 0.0,
         },
     )
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     fake_entries = [("https://t.me/c/42", "Fresh news", "Some body", now - 300)]
+    mock_runner = MagicMock()
+    mock_runner.run_round = MagicMock()
     with (
         patch.object(monitor, "_fetch_entries", return_value=fake_entries),
         patch.object(monitor, "_score_entry", return_value=9),
         patch("claudebots.core.feed_monitor.asyncio.create_task") as mock_create,
+        patch("claudebots.routers.panel.PanelRoundRunner", return_value=mock_runner),
     ):
         await monitor.run_once()
         # Count was reset, so a round should have started
@@ -257,7 +256,7 @@ async def test_old_entry_skipped(tmp_path):
     from claudebots.core import state as _state
     _state.update(monitor._state_path, {"feed_today_count": 0, "feed_last_run_ts": 0.0,
                                          "feed_last_reset_date": date.today().isoformat()})
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     old_ts = now - 90_000  # 25 hours ago
     fake_entries = [("https://t.me/c/99", "Old news", "Body", old_ts)]
     with (
@@ -275,7 +274,7 @@ async def test_low_score_no_round(tmp_path):
     from claudebots.core import state as _state
     _state.update(monitor._state_path, {"feed_today_count": 0, "feed_last_run_ts": 0.0,
                                          "feed_last_reset_date": date.today().isoformat()})
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     fake_entries = [("https://t.me/c/5", "Meh news", "Boring", now - 100)]
     with (
         patch.object(monitor, "_fetch_entries", return_value=fake_entries),
@@ -293,7 +292,7 @@ async def test_high_score_triggers_round(tmp_path):
     from claudebots.core import state as _state
     _state.update(monitor._state_path, {"feed_today_count": 0, "feed_last_run_ts": 0.0,
                                          "feed_last_reset_date": date.today().isoformat()})
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     fake_entries = [("https://t.me/c/7", "Hot news", "Great stuff", now - 100)]
     with (
         patch.object(monitor, "_fetch_entries", return_value=fake_entries),
@@ -315,15 +314,10 @@ async def test_topic_contains_title(tmp_path):
     from claudebots.core import state as _state
     _state.update(monitor._state_path, {"feed_today_count": 0, "feed_last_run_ts": 0.0,
                                          "feed_last_reset_date": date.today().isoformat()})
-    now = datetime.now(timezone.utc).timestamp()
+    now = datetime.now(UTC).timestamp()
     fake_entries = [("https://t.me/c/8", "Unique headline XYZ", "Body text", now - 100)]
-    captured_topic = []
-
-    async def fake_run_round(topic):
-        captured_topic.append(topic)
-
     mock_runner = MagicMock()
-    mock_runner.run_round = fake_run_round
+    mock_runner.run_round = MagicMock()
 
     with (
         patch.object(monitor, "_fetch_entries", return_value=fake_entries),
@@ -336,9 +330,10 @@ async def test_topic_contains_title(tmp_path):
         mock_create.return_value = mock_task
         await monitor.run_once()
 
-    # The topic passed to create_task should mention the headline
-    _, call_args, _ = mock_create.call_args[0][0], mock_create.call_args, mock_create.call_args[1]
-    assert mock_create.called
+    # The topic passed to run_round should mention the headline
+    mock_runner.run_round.assert_called_once()
+    called_topic = mock_runner.run_round.call_args[0][0]
+    assert "Unique headline XYZ" in called_topic
 
 
 # ---------------------------------------------------------------------------

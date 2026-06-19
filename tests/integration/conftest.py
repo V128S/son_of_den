@@ -16,5 +16,9 @@ def zero_panel_delays(monkeypatch):
         "REVIVAL_DELAY_MAX",
         "TYPING_DELAY_MIN",
         "TYPING_DELAY_MAX",
+        "SLOW_DELAY_MIN",
+        "SLOW_DELAY_MAX",
+        "SLOW_INITIAL_DELAY_MIN",
+        "SLOW_INITIAL_DELAY_MAX",
     ):
         monkeypatch.setattr(f"claudebots.routers.panel.{attr}", 0.0)

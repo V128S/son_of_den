@@ -12,7 +12,7 @@ import html as _html
 import logging
 import re
 import xml.etree.ElementTree as ET
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -229,7 +229,7 @@ class FeedMonitor:
             logger.debug("Feed monitor: daily limit reached (%d/%d)", feed_today_count, self._max_per_day)
             return
 
-        now = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(UTC).timestamp()
         if now - feed_last_run_ts < self._min_interval:
             logger.debug("Feed monitor: min interval not elapsed (%.0f s remaining)",
                          self._min_interval - (now - feed_last_run_ts))
@@ -375,13 +375,13 @@ async def _fetch_channel_entries_raw(
 async def build_daily_digest(
     *,
     channels: list[str],
-    ai_registry: "AIRegistry",
+    ai_registry: AIRegistry,
     interests: str,
 ) -> str | None:
     """Fetch all channel entries from the past 24 h and return an AI digest string."""
     if not channels:
         return None
-    since = datetime.now(timezone.utc).timestamp() - 86400
+    since = datetime.now(UTC).timestamp() - 86400
     all_entries: dict[str, list[tuple[str, str, str, float]]] = {}
     for ch in channels:
         entries = await _fetch_channel_entries_raw(ch, since)
@@ -429,7 +429,7 @@ async def _digest_loop(
     digest_time: str,
     channels: list[str],
     interests: str,
-    ai_registry: "AIRegistry",
+    ai_registry: AIRegistry,
     bot: Any,
     panel_chat_id: int,
     user_timezone: str,
@@ -467,11 +467,11 @@ def start_digest_scheduler(
     digest_time: str,
     channels: list[str],
     interests: str,
-    ai_registry: "AIRegistry",
+    ai_registry: AIRegistry,
     bot: Any,
     panel_chat_id: int,
     user_timezone: str,
-) -> "asyncio.Task[None]":
+) -> asyncio.Task[None]:
     """Start the daily digest background task."""
     task = asyncio.create_task(
         _digest_loop(
@@ -509,7 +509,7 @@ def start_feed_monitor(
     alerts: AlertSender,
     panel_chat_id: int,
     search_client: Any = None,
-) -> "asyncio.Task[None]":
+) -> asyncio.Task[None]:
     """Create and start the feed monitor background task; return the Task."""
     available = list(ai_registry.providers)
     scoring_provider = next(

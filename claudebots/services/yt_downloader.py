@@ -105,7 +105,7 @@ class YTDownloader:
                 timeout=30.0,
             )
             return result
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug("Subtitle fetch timed out: %s", url)
             return None
         except Exception as e:
@@ -182,7 +182,7 @@ class YTDownloader:
                 timeout=self.timeout,
             )
             return result
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("YouTube download timed out: %s", url)
             return None
         except Exception as e:

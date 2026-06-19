@@ -13,7 +13,6 @@ from claudebots.routers.panel import (
     _parse_mod_sections,
 )
 
-
 # ---------------------------------------------------------------------------
 # Every speaker turn instruction must force Russian — the panel model drifts to
 # English on English-language topics, and the system prompt alone doesn't hold.

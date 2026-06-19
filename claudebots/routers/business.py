@@ -5,7 +5,9 @@ import logging
 import re as _re
 import time
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
 from aiogram.types import (
@@ -15,22 +17,26 @@ from aiogram.types import (
     Message,
 )
 
+from claudebots.core import state as _state
 from claudebots.core.ai_registry import AIRegistry
 from claudebots.core.alerts import AlertSender
-from claudebots.core.conversation import ConversationStore
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
 from claudebots.core.calendar_client import GoogleCalendarClient
-from claudebots.core.personas import PersonaRegistry
-from claudebots.core import state as _state
-from pathlib import Path
+from claudebots.core.conversation import ConversationStore
+from claudebots.core.meters_client import (
+    MetersClient,
+    extract_meter_readings,
+)
 from claudebots.core.obsidian_client import ObsidianClient
+from claudebots.core.personas import PersonaRegistry
 from claudebots.core.sheets_client import GoogleSheetsClient, extract_sheet_id
-from claudebots.core.meters_client import MetersClient, looks_like_meter_message, extract_meter_readings
-from claudebots.services.insta_downloader import InstagramDownloader, detect_url as _detect_insta_url
-from claudebots.services.social_downloader import SocialDownloader, detect_platform as _detect_social_platform
-from claudebots.services.yt_downloader import YTDownloader, detect_url as _detect_yt_url, detect_summary_cmd as _detect_yt_summary_cmd, AudioFile as _YTAudioFile
+from claudebots.services.insta_downloader import InstagramDownloader
+from claudebots.services.insta_downloader import detect_url as _detect_insta_url
+from claudebots.services.social_downloader import SocialDownloader
+from claudebots.services.social_downloader import detect_platform as _detect_social_platform
+from claudebots.services.yt_downloader import AudioFile as _YTAudioFile
+from claudebots.services.yt_downloader import YTDownloader
+from claudebots.services.yt_downloader import detect_summary_cmd as _detect_yt_summary_cmd
+from claudebots.services.yt_downloader import detect_url as _detect_yt_url
 
 logger = logging.getLogger(__name__)
 
@@ -797,9 +803,8 @@ async def _extract_calendar_event(
     Returns a dict with keys: summary, start_iso, end_iso, description, location
     or None if no schedulable event was detected.
     """
-    from datetime import datetime, timedelta
-    from zoneinfo import ZoneInfo
     import json as _json
+    from datetime import datetime, timedelta
 
     now_str = datetime.now(tz).strftime("%Y-%m-%dT%H:%M:%S%z")
     tz_name = str(tz)
@@ -1311,19 +1316,19 @@ async def handle_private_message(
         contact_id = _topic_contacts[thread_id]
         if contact_id in _contact_data:
             contact = _contact_data[contact_id]
-            contact_context = f"\n\n🔴 ВНИМАНИЕ: ТЫ СЕЙЧАС ОБЩАЕШЬСЯ С ДЕНИСОМ (ТВОИМ ВЛАДЕЛЬЦЕМ), А НЕ С КЛИЕНТОМ!\n\n"
+            contact_context = "\n\n🔴 ВНИМАНИЕ: ТЫ СЕЙЧАС ОБЩАЕШЬСЯ С ДЕНИСОМ (ТВОИМ ВЛАДЕЛЬЦЕМ), А НЕ С КЛИЕНТОМ!\n\n"
             contact_context += f"Контекст: это топик переписки с контактом «{contact['name']}».\n\n"
             contact_context += f"ИСТОРИЯ ПЕРЕПИСКИ С {contact['name'].upper()}:\n"
             for msg in contact["messages"][-10:]:
                 role = "Контакт" if msg["role"] == "contact" else "Автоответчик"
                 contact_context += f"[{msg['time']}] {role}: {msg['text'][:200]}\n"
             contact_context += (
-                f"\n🔴 ВАЖНО:\n"
-                f"- Денис спрашивает ТЕБЯ как владелец\n"
-                f"- Не говори 'подготовлю для Дениса' - ты УЖЕ разговариваешь с Денисом\n"
-                f"- Отвечай кратко и по делу\n"
-                f"- Если он просит что-то сделать - просто подтверди что сделано или сделаешь\n"
-                f"- Если спрашивает о переписке - дай краткую сводку"
+                "\n🔴 ВАЖНО:\n"
+                "- Денис спрашивает ТЕБЯ как владелец\n"
+                "- Не говори 'подготовлю для Дениса' - ты УЖЕ разговариваешь с Денисом\n"
+                "- Отвечай кратко и по делу\n"
+                "- Если он просит что-то сделать - просто подтверди что сделано или сделаешь\n"
+                "- Если спрашивает о переписке - дай краткую сводку"
             )
 
     # /mute and /unmute in a contact topic — pause/resume AI auto-replies for that contact
@@ -1674,7 +1679,7 @@ async def handle_private_message(
             if not _social_files:
                 await _social_bot.send_message(
                     chat_id=_social_send_chat,
-                    text=f"❌ Не удалось скачать. Проверьте, что пост публичный.",
+                    text="❌ Не удалось скачать. Проверьте, что пост публичный.",
                     message_thread_id=_social_thread_id, parse_mode=None,
                 )
                 return

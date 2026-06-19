@@ -1,8 +1,6 @@
 import asyncio
-from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from zoneinfo import ZoneInfo
 
 import pytest
 
