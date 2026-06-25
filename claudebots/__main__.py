@@ -19,6 +19,7 @@ from claudebots.core.gemini_client import GeminiClient
 from claudebots.core.groq_client import GroqClient
 from claudebots.core.meters_client import MetersClient
 from claudebots.core.obsidian_client import ObsidianClient
+from claudebots.core.openmodel_client import OpenModelClient
 from claudebots.core.openrouter_client import OpenRouterClient
 from claudebots.core.personas import load_personas
 from claudebots.core.sheets_client import GoogleSheetsClient
@@ -194,6 +195,17 @@ async def amain() -> None:
     else:
         logger.warning("OpenRouter clients disabled (OPENROUTER_API_KEY not set)")
 
+    # OpenModel client (free deepseek-v4-flash) — panel discussion + daily digest
+    if settings.openmodel_api_key is not None:
+        clients["openmodel"] = OpenModelClient(
+            api_key=settings.openmodel_api_key.get_secret_value(),
+            model=settings.openmodel_model,
+            base_url=settings.openmodel_base_url,
+        )
+        logger.info("OpenModel client enabled (model=%s)", settings.openmodel_model)
+    else:
+        logger.warning("OpenModel client disabled (OPENMODEL_API_KEY not set)")
+
     # Gemini client (optional, for moderator)
     if settings.gemini_api_key is not None:
         clients["gemini"] = GeminiClient(
@@ -218,7 +230,7 @@ async def amain() -> None:
     # If OpenRouter is down, Groq silently handles creative/pragmatist/gemini-lite personas.
     groq_client = clients.get("groq")
     if groq_client is not None:
-        for provider in ("openrouter_deepseek", "openrouter_owl", "openrouter_gemini", "openrouter_nemotron"):
+        for provider in ("openrouter_deepseek", "openrouter_owl", "openrouter_gemini", "openrouter_nemotron", "openmodel"):
             if provider in clients:
                 clients[provider] = FallbackClient(
                     primary=clients[provider],
@@ -478,7 +490,7 @@ async def amain() -> None:
     # Start feed monitor (auto-topics from Telegram channel RSS)
     feed_task: asyncio.Task[None] | None = None
     feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
-    if feed_channels:
+    if feed_channels and settings.feed_monitor_enabled:
         feed_task = start_feed_monitor(
             channels=feed_channels,
             interests=settings.feed_interests,
@@ -495,24 +507,27 @@ async def amain() -> None:
             panel_chat_id=settings.panel_chat_id,
             search_client=search_client,
         )
-    else:
+    elif not feed_channels:
         logger.info("Feed monitor disabled (FEED_CHANNELS not set)")
+    else:
+        logger.info("Feed monitor auto-rounds disabled (FEED_MONITOR_ENABLED=false); channels kept for digest")
 
-    # Start daily feed digest (AI summary of all channel posts from the past 24 h)
-    digest_task: asyncio.Task[None] | None = None
+    # Start the daily morning digest — one coherent editorial post per day,
+    # built from the channels' last 24 h and written by deepseek-v4-flash.
+    feed_digest_task: asyncio.Task[None] | None = None
     if settings.feed_digest_time and feed_channels:
-        digest_task = start_feed_digest(
+        feed_digest_task = start_feed_digest(
             digest_time=settings.feed_digest_time,
             channels=feed_channels,
             interests=settings.feed_interests,
             ai_registry=ai_registry,
-            bot=bots.get("analyst") or bots["business"],
+            bot=bots.get("moderator") or bots["business"],
             panel_chat_id=settings.panel_chat_id,
             user_timezone=settings.user_timezone,
         )
-        logger.info("Feed digest scheduler started (time=%s)", settings.feed_digest_time)
+        logger.info("Daily digest scheduler started (time=%s)", settings.feed_digest_time)
     else:
-        logger.info("Feed digest disabled (FEED_DIGEST_TIME not set or no channels)")
+        logger.info("Daily digest disabled (FEED_DIGEST_TIME not set or no channels)")
 
     # Start daily token budget monitor (alerts admin when daily cost exceeds threshold)
     budget_task: asyncio.Task[None] | None = None
@@ -594,10 +609,10 @@ async def amain() -> None:
                 await followup_task
             except asyncio.CancelledError:
                 pass
-        if digest_task is not None:
-            digest_task.cancel()
+        if feed_digest_task is not None:
+            feed_digest_task.cancel()
             try:
-                await digest_task
+                await feed_digest_task
             except asyncio.CancelledError:
                 pass
 

@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     gemini_lite_model: str = "google/gemini-3.1-flash-lite"
     nemotron_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
+    # OpenModel — free deepseek-v4-flash via the Anthropic Messages API.
+    # Used for the panel discussion and the daily morning digest.
+    openmodel_api_key: SecretStr | None = None
+    openmodel_model: str = "deepseek-v4-flash"
+    openmodel_base_url: str = "https://api.openmodel.ai"
+
     # Google Gemini API (optional alternative for moderator)
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-2.0-flash"
@@ -66,6 +72,9 @@ class Settings(BaseSettings):
     # Comma-separated list of channel slugs, e.g. "durov,techcrunch".
     # Empty string disables the feed monitor entirely.
     feed_channels: str = ""
+    # When False, channels are still fetched for the daily digest, but the feed
+    # monitor never auto-triggers panel rounds (no random-time discussions).
+    feed_monitor_enabled: bool = True
     feed_interests: str = "технологии, AI, бизнес, стартапы"
     feed_max_per_day: int = 2
     feed_check_interval_hours: float = 1.0

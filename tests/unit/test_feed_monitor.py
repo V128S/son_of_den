@@ -8,6 +8,8 @@ from claudebots.core.feed_monitor import (
     FeedMonitor,
     _parse_rss,
     _strip_html,
+    _strip_markdown,
+    build_daily_digest,
 )
 
 # ---------------------------------------------------------------------------
@@ -391,3 +393,57 @@ async def test_empty_channels_no_http(tmp_path):
     with patch("httpx.AsyncClient") as mock_client:
         await monitor.run_once()
         mock_client.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# build_daily_digest — one editorial post, prefers openmodel
+# ---------------------------------------------------------------------------
+
+def test_strip_markdown_removes_markers():
+    raw = "## Заголовок\n**жирный** и `код`\n- пункт\n• буллет"
+    out = _strip_markdown(raw)
+    assert "#" not in out
+    assert "*" not in out
+    assert "`" not in out
+    assert out.startswith("Заголовок")
+
+
+@pytest.mark.asyncio
+async def test_build_daily_digest_prefers_openmodel():
+    """deepseek-v4-flash (openmodel) is chosen over other providers when present."""
+    client = MagicMock()
+    client.complete = AsyncMock(
+        return_value="Главное: событие.\nПочему важно: смысл.\nЧто делать: вывод."
+    )
+    ai_registry = MagicMock()
+    ai_registry.providers = ["groq", "openmodel", "claude"]
+    ai_registry.get_client = MagicMock(return_value=client)
+
+    entries = [
+        ("https://t.me/x/1", "Заголовок", "Текст новости про рынок", datetime.now(UTC).timestamp())
+    ]
+    with patch(
+        "claudebots.core.feed_monitor._fetch_channel_entries_raw",
+        AsyncMock(return_value=entries),
+    ):
+        digest = await build_daily_digest(
+            channels=["markettwits"], ai_registry=ai_registry, interests="финансы"
+        )
+
+    assert digest is not None
+    assert "Главное:" in digest
+    ai_registry.get_client.assert_called_once_with("openmodel")
+
+
+@pytest.mark.asyncio
+async def test_build_daily_digest_none_without_entries():
+    ai_registry = MagicMock()
+    ai_registry.providers = ["openmodel"]
+    with patch(
+        "claudebots.core.feed_monitor._fetch_channel_entries_raw",
+        AsyncMock(return_value=[]),
+    ):
+        digest = await build_daily_digest(
+            channels=["markettwits"], ai_registry=ai_registry, interests="финансы"
+        )
+    assert digest is None

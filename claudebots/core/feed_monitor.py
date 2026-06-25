@@ -12,7 +12,7 @@ import html as _html
 import logging
 import re
 import xml.etree.ElementTree as ET
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -372,13 +372,49 @@ async def _fetch_channel_entries_raw(
     return [(u, t, tx, ts) for u, t, tx, ts in entries if ts >= since_ts]
 
 
+# Editorial digest — one coherent morning post in a single voice.
+# Replaces the old per-channel bullet summary, which read as disjointed chunks.
+_DIGEST_SYSTEM = (
+    "Ты — главный редактор утреннего новостного дайджеста для занятого "
+    "предпринимателя из Украины. По постам новостного канала за прошедшие сутки "
+    "пишешь ОДИН связный пост от одного лица — без диалогов, без разбивки по "
+    "каналам, без панели экспертов.\n\n"
+    "ПРАВИЛА:\n"
+    "- Пиши ТОЛЬКО на русском языке. Ни одного слова или метки на другом языке.\n"
+    "- Не упоминай и не рекомендуй российские компании и сервисы (Яндекс, "
+    "Сбербанк, ВКонтакте, Mail.ru, 2ГИС и подобные) — бери международные или "
+    "украинские аналоги.\n"
+    "- Без markdown, без заголовков-решёток, без нумерации и буллетов.\n"
+    "- Не выдумывай факты: только то, что есть в постах. Если данных мало — "
+    "скажи это прямо, не додумывай.\n\n"
+    "СТРУКТУРА — ровно три блока, каждый с новой строки и со своей меткой:\n"
+    "Главное: одно-два ключевых события дня, что произошло.\n"
+    "Почему важно: связно объясни смысл для бизнеса, экономики и технологий.\n"
+    "Что делать: один практический вывод или наблюдение.\n\n"
+    "Объём — до 150 слов. Живой, плотный язык, без воды."
+)
+
+_MD_RE = re.compile(r"(^\s*#{1,6}\s+|\*{1,3}|`+|^\s*[-*•]\s+)", re.MULTILINE)
+
+
+def _strip_markdown(text: str) -> str:
+    """Drop markdown markers the model occasionally adds despite the prompt."""
+    text = _MD_RE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
 async def build_daily_digest(
     *,
     channels: list[str],
     ai_registry: AIRegistry,
     interests: str,
 ) -> str | None:
-    """Fetch all channel entries from the past 24 h and return an AI digest string."""
+    """Fetch the past 24 h of channel posts and return ONE editorial digest post.
+
+    Single coherent voice (Главное / Почему важно / Что делать), Russian only,
+    written by deepseek-v4-flash (OpenModel) when available.  Returns None when
+    there is no fresh material — better no post than a hallucinated one.
+    """
     if not channels:
         return None
     since = datetime.now(UTC).timestamp() - 86400
@@ -391,34 +427,32 @@ async def build_daily_digest(
     if not all_entries:
         return None
 
-    # Build compact text block for AI
+    # Flatten into one source-agnostic block — the digest is a single voice,
+    # not a per-channel rundown.
     lines: list[str] = []
-    for ch, entries in all_entries.items():
-        lines.append(f"=== @{ch} ({len(entries)} posts) ===")
-        for _, title, text, _ in entries[:20]:
-            snippet = (text or title)[:200].replace("\n", " ")
-            lines.append(f"• {snippet}")
-
+    for entries in all_entries.values():
+        for _, title, text, _ in entries[:25]:
+            snippet = (text or title)[:240].replace("\n", " ").strip()
+            if snippet:
+                lines.append(f"• {snippet}")
+    if not lines:
+        return None
     block = "\n".join(lines)[:6000]
 
     available = list(ai_registry.providers)
     provider = next(
-        (p for p in ["openrouter_gemini", "groq", "openrouter_deepseek", "claude"] if p in available),
+        (p for p in ["openmodel", "groq", "openrouter_gemini", "openrouter_deepseek", "claude"] if p in available),
         available[0] if available else "claude",
     )
     try:
         client = ai_registry.get_client(provider)
         digest = await client.complete(
-            system=(
-                f"Ты составляешь ежедневный дайджест Telegram-каналов. "
-                f"Интересы читателя: {interests}. "
-                "Структурируй по каналам, выдели 3-5 самых важных постов, кратко изложи суть каждого. "
-                "Формат: канал → краткий список. Язык: русский."
-            ),
-            messages=[{"role": "user", "content": f"Посты за последние 24 ч:\n\n{block}"}],
-            max_tokens=1200,
+            system=f"{_DIGEST_SYSTEM}\n\nИнтересы читателя: {interests}.",
+            messages=[{"role": "user", "content": f"Посты канала за последние 24 часа:\n\n{block}"}],
+            max_tokens=600,
         )
-        return digest.strip() if digest else None
+        digest = _strip_markdown(digest or "")
+        return digest or None
     except Exception as e:
         logger.warning("Digest: AI summarisation failed: %s", e)
         return None
@@ -441,8 +475,13 @@ async def _digest_loop(
         now = datetime.now(tz)
         target = now.replace(hour=h, minute=m, second=0, microsecond=0)
         if target <= now:
-            target = target.replace(day=target.day + 1)
+            target += timedelta(days=1)  # timedelta survives month/year rollover
         wait = (target - now).total_seconds()
+        logger.info(
+            "Daily digest: next post in %.0f min at %s",
+            wait / 60,
+            target.strftime("%d.%m %H:%M"),
+        )
         await asyncio.sleep(wait)
         try:
             digest = await build_daily_digest(
@@ -451,13 +490,17 @@ async def _digest_loop(
                 interests=interests,
             )
             if digest:
-                header = f"📰 <b>Дайджест каналов</b> — {datetime.now(tz).strftime('%d.%m %H:%M')}\n\n"
+                header = f"📰 Утренний дайджест · {datetime.now(tz).strftime('%d.%m.%Y')}\n\n"
+                # parse_mode=None: the digest is free-form text and must never
+                # fail to send on a stray '<' or '&'.
                 await bot.send_message(
                     chat_id=panel_chat_id,
                     text=header + digest,
-                    parse_mode="HTML",
+                    parse_mode=None,
                 )
-                logger.info("Daily digest sent to panel chat %d", panel_chat_id)
+                logger.info("Daily digest posted to chat %d (%d chars)", panel_chat_id, len(digest))
+            else:
+                logger.info("Daily digest: no fresh material — skipping today's post")
         except Exception as e:
             logger.warning("Digest loop error: %s", e)
 
