@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # When False, channels are still fetched for the daily digest, but the feed
     # monitor never auto-triggers panel rounds (no random-time discussions).
     feed_monitor_enabled: bool = True
-    feed_interests: str = "технологии, AI, бизнес, стартапы"
+    feed_interests: str = "финансы, криптовалюта, ИИ, TON, политика (Украина/россия/США/Китай)"
     feed_max_per_day: int = 2
     feed_check_interval_hours: float = 1.0
     feed_min_score: int = 7
