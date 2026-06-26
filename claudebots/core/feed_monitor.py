@@ -12,7 +12,7 @@ import html as _html
 import logging
 import re
 import xml.etree.ElementTree as ET
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -469,20 +469,13 @@ async def _digest_loop(
     user_timezone: str,
 ) -> None:
     from zoneinfo import ZoneInfo
+
+    from claudebots.core.scheduling import daily_at
+
     tz = ZoneInfo(user_timezone)
-    h, m = map(int, digest_time.split(":"))
-    while True:
-        now = datetime.now(tz)
-        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)  # timedelta survives month/year rollover
-        wait = (target - now).total_seconds()
-        logger.info(
-            "Daily digest: next post in %.0f min at %s",
-            wait / 60,
-            target.strftime("%d.%m %H:%M"),
-        )
-        await asyncio.sleep(wait)
+    # daily_at polls the wall clock so a digest missed while the Mac sleeps is
+    # posted as soon as it wakes (a single long asyncio.sleep would freeze).
+    async for _ in daily_at(digest_time, tz, label="Daily digest", log=logger):
         try:
             digest = await build_daily_digest(
                 channels=channels,

@@ -9,7 +9,7 @@ The briefing combines:
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -113,23 +113,11 @@ async def _briefing_loop(
     ai_registry,
 ) -> None:
     """Send morning briefing at a fixed local time each day."""
+    from claudebots.core.scheduling import daily_at
+
     tz = ZoneInfo(timezone_str)
-    h, m = map(int, briefing_time.split(":"))
-
-    while True:
-        now_dt = datetime.now(tz)
-        target = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-        if target <= now_dt:
-            target += timedelta(days=1)
-
-        delay = (target - now_dt).total_seconds()
-        logger.info(
-            "Briefing scheduler: next send in %.0f min at %s",
-            delay / 60,
-            target.strftime("%d.%m %H:%M"),
-        )
-        await asyncio.sleep(delay)
-
+    # Wall-clock polling so a briefing missed during macOS sleep fires on wake.
+    async for _ in daily_at(briefing_time, tz, label="Briefing scheduler", log=logger):
         try:
             text = await _build_briefing(
                 timezone_str=timezone_str,

@@ -5,7 +5,7 @@ import logging
 import re as _re
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -2086,19 +2086,11 @@ async def _digest_loop(
     digest_time: str,
 ) -> None:
     """Send a daily contact digest at a fixed local time, then reset today's log."""
+    from claudebots.core.scheduling import daily_at
+
     tz = ZoneInfo(timezone_str)
-    h, m = map(int, digest_time.split(":"))
-
-    while True:
-        now_dt = datetime.now(tz)
-        target = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-        if target <= now_dt:
-            target += timedelta(days=1)
-
-        delay = (target - now_dt).total_seconds()
-        logger.info("Digest scheduler: next send in %.0f min at %s", delay / 60, target.strftime("%d.%m %H:%M"))
-        await asyncio.sleep(delay)
-
+    # Wall-clock polling so the digest survives macOS sleep (fires on wake).
+    async for _ in daily_at(digest_time, tz, label="Digest scheduler", log=logger):
         try:
             msg = _build_digest_message(timezone_str)
             await bot.send_message(admin_user_id, msg, parse_mode=None)

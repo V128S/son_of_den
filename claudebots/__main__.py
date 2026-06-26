@@ -75,13 +75,12 @@ async def _session_guardian(bots: dict) -> None:
 
 
 async def _daily_usage_resetter(ai_registry) -> None:
-    """Reset daily usage counters every UTC midnight."""
-    from datetime import UTC, datetime, timedelta
-    while True:
-        now = datetime.now(UTC)
-        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
-        delay = (next_midnight - now).total_seconds()
-        await asyncio.sleep(delay)
+    """Reset daily usage counters every UTC midnight (survives macOS sleep)."""
+    from zoneinfo import ZoneInfo
+
+    from claudebots.core.scheduling import daily_at
+
+    async for _ in daily_at("00:00", ZoneInfo("UTC"), label="Daily usage reset", log=logger):
         ai_registry.reset_daily_usage()
 
 

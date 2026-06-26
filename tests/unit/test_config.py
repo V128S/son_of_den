@@ -49,7 +49,7 @@ def test_feed_defaults(monkeypatch):
     s = Settings(_env_file=None)
 
     assert s.feed_channels == ""
-    assert "AI" in s.feed_interests
+    assert "ИИ" in s.feed_interests
     assert s.feed_max_per_day == 2
     assert s.feed_check_interval_hours == 1.0
     assert s.feed_min_score == 7

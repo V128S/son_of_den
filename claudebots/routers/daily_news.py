@@ -148,23 +148,11 @@ async def _daily_news_loop(
     search_client: Any,
 ) -> None:
     """Sleep until the scheduled time, then trigger a single panel round per day."""
+    from claudebots.core.scheduling import daily_at
+
     tz = ZoneInfo(timezone_str)
-    h, m = map(int, panel_time.split(":"))
-
-    while True:
-        now_dt = datetime.now(tz)
-        target = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-        if target <= now_dt:
-            target += timedelta(days=1)
-
-        delay = (target - now_dt).total_seconds()
-        logger.info(
-            "Daily news panel: next run in %.0f min at %s",
-            delay / 60,
-            target.strftime("%d.%m %H:%M"),
-        )
-        await asyncio.sleep(delay)
-
+    # Wall-clock polling so a missed run fires on wake instead of being skipped.
+    async for _ in daily_at(panel_time, tz, label="Daily news panel", log=logger):
         try:
             topic = await _build_news_topic(
                 interests=interests,
