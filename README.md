@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat&logo=telegram)](https://core.telegram.org/bots)
-[![Tests](https://img.shields.io/badge/Tests-124%20passing-brightgreen?style=flat)](#testing)
+[![Tests](https://img.shields.io/badge/Tests-315%20passing-brightgreen?style=flat)](#testing)
 [![License](https://img.shields.io/badge/License-Private-red?style=flat)](#)
 
 </div>
@@ -23,7 +23,13 @@
 
 **YouTube Audio** — send any `https://youtu.be/` or `https://youtube.com/watch?v=` link and the bot extracts the best-quality audio track and delivers it to a `🎵 YouTube` forum topic as a playable audio message (or document if >50 MB).
 
+**TikTok & X/Twitter Downloader** — send any public TikTok or X/Twitter URL and the bot downloads the video and delivers it to a dedicated `🎬 TikTok` or `🐦 X / Twitter` forum topic.
+
 **Panel Discussion** — 5 bots that debate any topic: Analyst, Skeptic, Creative, Pragmatist, and a Moderator who synthesises everything into a clean takeaway. Questions are automatically categorised and routed to thematic forum threads.
+
+**Daily News Panel** — every morning the bot fetches yesterday's top headlines via Exa and automatically launches a panel discussion. Configurable time and interests.
+
+**Daily Feed Digest** — one AI-written editorial summary of all configured Telegram channel posts from the past 24 h, delivered to the panel forum at a configured time.
 
 ---
 
@@ -63,7 +69,8 @@ One Python process · One asyncio loop · 6 Telegram bots
 
 **Services:**
 - `InstagramDownloader` — yt-dlp powered downloader for public posts/Reels, with ffmpeg H.264 re-encode and carousel support
-- `YTDownloader` — yt-dlp powered audio extractor for YouTube videos (no re-encode, native quality)
+- `YTDownloader` — yt-dlp powered audio extractor for YouTube videos (no re-encode, native quality); also has `fetch_transcript()` for video summarisation
+- `SocialDownloader` — yt-dlp powered downloader for TikTok and X/Twitter public videos
 
 ---
 
@@ -73,14 +80,16 @@ Each persona is assigned a specific AI provider, configured in `personas.yaml`:
 
 | Provider key | Backend | Used for |
 |---|---|---|
-| `claude` | Anthropic Claude | Business assistant (streaming) |
-| `groq` | Groq (llama-3.3-70b) | Analyst, Skeptic |
+| `claude` | Anthropic Claude | Business assistant (streaming, circuit breaker + Groq fallback) |
+| `groq` | Groq llama-3.3-70b | Analyst, Skeptic; silent fallback for other providers |
 | `openrouter_deepseek` | DeepSeek via OpenRouter | Creative, Pragmatist |
-| `openrouter_owl` | Owl Alpha via OpenRouter | *(configurable)* |
+| `openrouter_owl` | Owl Alpha via OpenRouter | *(configurable in personas.yaml)* |
 | `openrouter_gemini` | Gemini Lite via OpenRouter | Topic categorisation |
-| `gemini` | Google Gemini direct | Moderator *(optional)* |
+| `openrouter_nemotron` | Nvidia Nemotron via OpenRouter | *(configurable in personas.yaml)* |
+| `openmodel` | deepseek-v4-flash (free) | Panel discussion, daily digest |
+| `gemini` | Google Gemini direct API | Moderator *(optional alternative)* |
 
-All clients share a `CircuitBreaker` — after N consecutive failures the breaker opens, logs a warning, and Groq fallback (if configured) kicks in automatically.
+`ClaudeClient` has a built-in `CircuitBreaker`. All OpenRouter/OpenModel clients are wrapped with `FallbackClient` → Groq so any provider outage is handled silently.
 
 ---
 
@@ -110,12 +119,10 @@ cp .env.example .env
 
 Key variables:
 
+**Required:**
+
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_API_KEY` | Anthropic API key (business assistant) |
-| `GROQ_API_KEY` | Groq API key (analyst & skeptic) |
-| `OPENROUTER_API_KEY` | OpenRouter key (creative, pragmatist, topic classifier) |
-| `GEMINI_API_KEY` | Google Gemini key *(optional — moderator)* |
 | `BUSINESS_BOT_TOKEN` | Business auto-responder bot token |
 | `PANEL_BOT_ANALYST_TOKEN` | Panel analyst bot token |
 | `PANEL_BOT_SKEPTIC_TOKEN` | Panel skeptic bot token |
@@ -124,18 +131,62 @@ Key variables:
 | `PANEL_BOT_MODERATOR_TOKEN` | Panel moderator bot token |
 | `PANEL_CHAT_ID` | Forum group chat ID (negative number) |
 | `ADMIN_USER_ID` | Your Telegram user ID |
-| `CLAUDE_MODEL` | Claude model (default: `claude-sonnet-4-6`) |
-| `GROQ_MODEL` | Groq model (default: `llama-3.3-70b-versatile`) |
-| `DEEPSEEK_MODEL` | DeepSeek model via OpenRouter |
-| `OWL_ALPHA_MODEL` | Owl Alpha model via OpenRouter |
-| `GEMINI_LITE_MODEL` | Gemini Lite model via OpenRouter (topic classifier) |
-| `GEMINI_MODEL` | Gemini model for direct API (default: `gemini-2.0-flash`) |
-| `MODERATOR_PROVIDER` | Provider for moderator persona (default: `claude`) |
-| `GOOGLE_SERVICE_ACCOUNT_FILE` | Path to Google credentials JSON *(optional)* |
+
+**AI Providers (at least one panel provider required):**
+
+| Variable | Description |
+|---|---|
+| `ANTHROPIC_API_KEY` | Anthropic Claude (business assistant) |
+| `GROQ_API_KEY` | Groq llama-3.3-70b (analyst, skeptic, fallback) |
+| `OPENROUTER_API_KEY` | OpenRouter (creative, pragmatist, classifier, nemotron, owl) |
+| `OPENMODEL_API_KEY` | OpenModel free deepseek-v4-flash (panel, daily digest) |
+| `GEMINI_API_KEY` | Google Gemini direct API *(optional — moderator)* |
+| `EXA_API_KEY` | Exa web search *(optional — daily news panel enrichment)* |
+
+**Model overrides (all have sensible defaults):**
+
+| Variable | Default |
+|---|---|
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` |
+| `DEEPSEEK_MODEL` | `deepseek/deepseek-v4-flash:free` |
+| `OWL_ALPHA_MODEL` | `openrouter/owl-alpha` |
+| `GEMINI_LITE_MODEL` | `google/gemini-3.1-flash-lite` |
+| `NEMOTRON_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` |
+| `OPENMODEL_MODEL` | `deepseek-v4-flash` |
+| `GEMINI_MODEL` | `gemini-2.0-flash` |
+| `MODERATOR_PROVIDER` | `claude` |
+
+**Scheduling & notifications:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `USER_TIMEZONE` | `Europe/Moscow` | Timezone for all daily times |
+| `MORNING_BRIEFING_TIME` | `09:00` | Daily AI briefing (calendar + panel memories) |
+| `CONTACT_DIGEST_TIME` | `20:00` | Daily contact activity summary |
+| `DAILY_NEWS_PANEL_TIME` | *(empty)* | Daily panel round from top news (Exa) |
+| `DAILY_NEWS_INTERESTS` | *(falls back to `FEED_INTERESTS`)* | Topics for daily news search |
+| `FEED_DIGEST_TIME` | *(empty)* | Daily editorial digest of channel posts |
+| `CONTACT_FOLLOWUP_DAYS` | `0` | Days of silence before follow-up reminder (0 = off) |
+| `DAILY_COST_ALERT_USD` | `0.0` | Daily budget alert threshold USD (0 = off) |
+| `PANEL_REVIVAL_INTERVAL_HOURS` | `0.0` | Revival scheduler interval (0 = off) |
+
+**Integrations (all optional):**
+
+| Variable | Description |
+|---|---|
+| `GOOGLE_SERVICE_ACCOUNT_FILE` | Path to Google credentials JSON |
 | `GOOGLE_CALENDAR_ID` | Google Calendar ID (default: `primary`) |
-| `USER_TIMEZONE` | Timezone for calendar events (default: `Europe/Moscow`) |
+| `OBSIDIAN_VAULT_PATH` | Local Obsidian vault path for contact history |
+| `SHEETS_PERSONAL_ID` | Google Sheet ID for price transfers |
+| `SHEETS_MARKUP_PERCENT` | Markup % applied to transferred prices (default: `20`) |
+| `METERS_SHEET_ID` | Google Sheet ID for utility meter readings |
+| `EXPENSES_SHEET_ID` | Google Sheet ID for expense tracking |
+| `FEED_CHANNELS` | Comma-separated Telegram channel slugs for RSS |
+| `FEED_INTERESTS` | Topics for feed scoring (default: finance/crypto/AI/politics) |
 | `PERSONAS_PATH` | Path to personas YAML (default: `personas.yaml`) |
 | `LOG_LEVEL` | Logging level (default: `INFO`) |
+| `LOG_FILE` | Log file path (empty = stdout only) |
 
 ### 3. Set up bots
 
@@ -246,8 +297,8 @@ The business assistant reads your calendar in real time to answer questions like
 ## 🧪 Testing
 
 ```bash
-uv run pytest                  # all 124 tests
-uv run pytest tests/unit       # unit tests only (fast)
+uv run pytest                  # all 315 tests (e2e excluded by default)
+uv run pytest tests/unit       # unit tests only (fast, no external deps)
 uv run pytest tests/integration
 ```
 
@@ -261,8 +312,24 @@ Send to any of the 6 bots (admin user only):
 |---|---|
 | `/ping` | Health check — bot replies `pong` |
 | `/reset` | Clear conversation history for current chat/topic |
-| `/cost` | Token usage + approximate USD spend across all providers |
+| `/cost` | Token usage + approximate USD spend (daily + all-time) |
 | `/reload` | Hot-reload `personas.yaml` without restart |
+| `/contacts` | List known contacts with mute status (🔇) |
+| `/stats` | Contact count, panel topics/memories, token usage |
+| `/panelfind <query>` | Search panel memories by text or topic (last 10 hits) |
+| `/panelstatus` | Panel lock state, active round, pending reminders |
+| `/personas` | List loaded personas with provider and model |
+| `/panelschedule HH:MM Topic` | Schedule a one-off panel round at local time |
+| `/panelcancel` | Cancel a pending scheduled panel round |
+| `/panelbest` | Show the top-scored panel memory |
+| `/panelworst` | Show the lowest-scored panel memory |
+
+**Business bot topic commands** (typed inside a contact's forum topic):
+
+| Command | Description |
+|---|---|
+| `/mute` or `/pause` | Pause AI auto-replies for this contact |
+| `/unmute` or `/resume` | Resume AI auto-replies for this contact |
 
 ---
 
@@ -271,24 +338,35 @@ Send to any of the 6 bots (admin user only):
 ```
 claudebots/
 ├── core/
-│   ├── config.py            # Settings from .env (pydantic)
-│   ├── personas.py          # Persona model + YAML loader
-│   ├── ai_registry.py       # Multi-model client router
-│   ├── conversation.py      # In-memory chat history (ring buffer)
+│   ├── config.py            # Settings from .env (pydantic-settings)
+│   ├── personas.py          # Persona model + YAML loader (hot-reload)
+│   ├── ai_registry.py       # Multi-model client router + FallbackClient
+│   ├── scheduling.py        # Sleep-robust daily_at() scheduler (macOS fix)
+│   ├── conversation.py      # In-memory chat history (ring buffer, maxlen=40)
 │   ├── circuit_breaker.py   # Failure detection & auto-fallback
 │   ├── alerts.py            # Throttled admin notifications
-│   ├── calendar_client.py   # Google Calendar integration
-│   ├── claude_client.py     # Anthropic API wrapper (streaming)
+│   ├── calendar_client.py   # Google Calendar integration (60 s cache)
+│   ├── claude_client.py     # Anthropic API wrapper (streaming + prompt cache)
 │   ├── groq_client.py       # Groq API wrapper
-│   ├── gemini_client.py     # Google Gemini wrapper
-│   └── openrouter_client.py # OpenRouter wrapper
+│   ├── openmodel_client.py  # OpenModel deepseek-v4-flash (free)
+│   ├── gemini_client.py     # Google Gemini direct API wrapper
+│   ├── openrouter_client.py # OpenRouter wrapper (deepseek/owl/gemini/nemotron)
+│   ├── feed_monitor.py      # RSS poller + feed digest scheduler
+│   ├── search_client.py     # Exa web search enrichment
+│   ├── obsidian_client.py   # Obsidian vault contact history
+│   ├── sheets_client.py     # Google Sheets price transfer
+│   ├── meters_client.py     # Utility meter readings → Sheets
+│   └── state.py             # Atomic JSON persistence (bot_state.json)
 ├── routers/
-│   ├── business.py          # Business + personal + Instagram/YouTube handler
-│   ├── panel.py             # Panel round orchestrator + forum topics
-│   └── admin.py             # Admin commands
+│   ├── business.py          # Business + personal + media downloader handler
+│   ├── panel.py             # Panel round orchestrator + reminder checker
+│   ├── daily_news.py        # Once-a-day news panel (Exa → PanelRoundRunner)
+│   ├── briefing.py          # Morning briefing scheduler
+│   └── admin.py             # Admin commands (/ping, /cost, /panelschedule, …)
 ├── services/
 │   ├── insta_downloader.py  # Instagram media downloader (yt-dlp + ffmpeg)
-│   └── yt_downloader.py     # YouTube audio extractor (yt-dlp)
+│   ├── yt_downloader.py     # YouTube audio extractor + transcript (yt-dlp)
+│   └── social_downloader.py # TikTok & X/Twitter video downloader (yt-dlp)
 ├── bots.py                  # Bot instances factory
 └── __main__.py              # Entrypoint & dependency injection
 ```

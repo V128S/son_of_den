@@ -11,7 +11,7 @@ uv sync
 # Run the bot
 uv run python -m claudebots
 
-# Run all tests (248 tests, e2e excluded by default)
+# Run all tests (315 tests, e2e excluded by default)
 uv run pytest
 
 # Run unit tests only (fast, no external deps)
@@ -45,12 +45,15 @@ One Python process, one asyncio event loop, 6 Telegram bots. All bots share a si
 Background tasks started at boot:
 - **Session guardian** — calls `Bot.close()` on all bots every 40 s to evict any competing process
 - **Revival scheduler** — spontaneously re-opens past panel discussions at a configurable interval (`PANEL_REVIVAL_INTERVAL_HOURS`)
-- **Daily digest scheduler** — sends a contact summary to the admin at `CONTACT_DIGEST_TIME`
+- **Reminder checker** — `start_reminder_checker()` re-surfaces action items from panel discussions after 18-20 h
+- **Daily contact digest** — sends a contact summary to the admin at `CONTACT_DIGEST_TIME`
 - **Morning briefing scheduler** — sends an AI-generated daily briefing (calendar + panel memories + AI summary) at `MORNING_BRIEFING_TIME` (default 09:00)
 - **Daily usage resetter** — resets per-provider daily token counters at UTC midnight
 - **Budget monitor** — checks estimated daily cost every hour; sends admin alert once per day if `DAILY_COST_ALERT_USD` is exceeded (0 = disabled)
 - **Daily news panel** — fires exactly one `PanelRoundRunner` round per day at `DAILY_NEWS_PANEL_TIME` (local time), building a topic from yesterday's headlines via Exa; disabled when empty
 - **Feed monitor** — polls Telegram channel RSS and auto-triggers panel rounds for scored posts
+- **Feed digest** — `start_feed_digest()` sends one AI-written editorial summary of all channel posts from the past 24 h at `FEED_DIGEST_TIME`; uses `moderator` bot if available, else `business`
+- **Follow-up monitor** — checks every 12 h for contacts silent longer than `CONTACT_FOLLOWUP_DAYS` days; notifies admin in their forum topic
 
 On graceful shutdown, conversation history and usage counters are saved to `bot_state.json` and restored on the next startup. The daily usage window resets at UTC midnight; `/cost` shows both today's and all-time usage.
 
@@ -60,7 +63,10 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 |---|---|
 | `config.py` | `Settings` (pydantic-settings from `.env`). Single source of truth for all env vars. |
 | `ai_registry.py` | `AIRegistry` — maps provider name strings (`"claude"`, `"groq"`, `"openrouter_deepseek"`, etc.) to `AIClient` instances. All clients satisfy the `AIClient` Protocol: `complete()` + `stream()` + `usage`. Tracks both cumulative and daily usage; `reset_daily_usage()` / `get_daily_usage_by_provider()` for the daily window. `snapshot_usage()` / `restore_usage()` for cross-restart persistence. `FallbackClient` wraps two clients — tries primary, silently falls back on any exception. |
+| `scheduling.py` | Sleep-robust `daily_at(time_str, tz)` async generator. Polls the wall clock in 60 s chunks so tasks fire correctly after macOS sleep (monotonic timer freezes during sleep; wall clock does not). Used by every daily scheduler in the project. |
 | `claude_client.py` | Wraps Anthropic SDK. Uses prompt caching (`cache_control: ephemeral` on system blocks). Has `CircuitBreaker` built in; falls back to Groq on open. |
+| `openmodel_client.py` | `OpenModelClient` — calls OpenModel's free deepseek-v4-flash via the Anthropic Messages API format. Used for panel discussion and daily digest. Enabled when `OPENMODEL_API_KEY` is set. |
+| `gemini_client.py` | `GeminiClient` — Google Gemini direct API wrapper. Optional alternative for the moderator persona. Enabled when `GEMINI_API_KEY` is set. |
 | `circuit_breaker.py` | Sliding-window failure counter. `CLOSED → OPEN` after N failures in window; `OPEN → HALF_OPEN` after recovery period; `HALF_OPEN → CLOSED` on success. |
 | `conversation.py` | `ConversationStore` — per-key ring buffer (deque with `maxlen=40`). Keys are namespaced strings like `"biz:{conn_id}:{chat_id}"` or `"private:{chat_id}:{thread_id}"`. `snapshot()` / `restore()` for cross-restart persistence. |
 | `personas.py` | Loads `personas.yaml` into `PersonaRegistry`. Supports `<<MARKER>>` template substitution across prompts. `/reload` hot-reloads without restart. |
@@ -70,7 +76,7 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 | `obsidian_client.py` | `ObsidianClient` — writes contact conversation history to local Obsidian vault (`Contacts/{name}.md`, `Daily/{date}.md`). Disabled when `OBSIDIAN_VAULT_PATH` is empty. |
 | `sheets_client.py` | `GoogleSheetsClient` — reads a contact's Google Sheet price list and transfers rows (with markup) to the owner's personal sheet. Enabled when `GOOGLE_SERVICE_ACCOUNT_FILE` and `SHEETS_PERSONAL_ID` are both set. |
 | `meters_client.py` | `MetersClient` — parses free-text meter readings (gas/water/electricity) via AI and appends them to a Google Sheet. Enabled when `METERS_SHEET_ID` is set. |
-| `feed_monitor.py` | Polls `rsshub.app/telegram/channel/<slug>` (Atom); falls back to `t.me/s/<slug>` scraping on 403. Scores entries with the cheapest available AI; fires `PanelRoundRunner` when score ≥ `FEED_MIN_SCORE`. |
+| `feed_monitor.py` | Polls `rsshub.app/telegram/channel/<slug>` (Atom); falls back to `t.me/s/<slug>` scraping on 403. Scores entries with the cheapest available AI; fires `PanelRoundRunner` when score ≥ `FEED_MIN_SCORE`. Also contains `start_digest_scheduler()` for the daily channel digest. |
 | `search_client.py` | `SearchClient` — async Exa API wrapper for web search enrichment. `search(query, num_results=3)` returns `list[SearchResult]`; disabled when `EXA_API_KEY` is not set. `format_results()` renders a compact block injected into panel context. |
 
 ### Services (`claudebots/services/`)
@@ -99,6 +105,12 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 - **Direct reply mode** — if the admin replies to a specific panel bot's message, only that bot responds (no full round). `_find_persona_for_bot_user_id()` maps `message.from_user.id` to a `(Bot, Persona)` pair by comparing against bot token prefixes.
 - Forum topics are created/reused per discussion category. `_panel_topics` (thread_id → name) and `_panel_memories` (up to 30 entries with `{text, topic, ts}` metadata) are persisted in `bot_state.json`. Legacy plain-string entries are migrated to dict format on load.
 - Revival scheduler picks a random past memory and re-opens it informally.
+- `start_reminder_checker()` — background task that re-surfaces action items extracted from panel memories after 18-20 h; stores pending reminders in `bot_state.json`.
+
+**`daily_news.py`** — once-a-day panel discussion from real news:
+- `start_daily_news_panel()` fires at `DAILY_NEWS_PANEL_TIME` using `scheduling.daily_at`
+- Fetches yesterday's headlines via Exa search based on `DAILY_NEWS_INTERESTS` (falls back to `FEED_INTERESTS`)
+- Builds a topic string and calls `PanelRoundRunner.run_round()`; no-op if Exa is unavailable
 
 **`briefing.py`** — morning briefing scheduler:
 - `start_briefing_scheduler()` fires `_build_briefing()` daily at `MORNING_BRIEFING_TIME`
@@ -106,7 +118,23 @@ On graceful shutdown, conversation history and usage counters are saved to `bot_
 - Uses the cheapest available provider (`openrouter_gemini` → `groq` → `claude`)
 - Survives calendar API failure gracefully
 
-**`admin.py`** — `/ping`, `/reset`, `/cost`, `/reload`, `/contacts`, `/stats`, `/panelfind` commands. `PersonaHolder` wraps `PersonaRegistry` so `/reload` can swap the registry in-place. `/contacts` prints a summary of all known contacts (calls `get_contacts_summary()` from `business.py`). `/stats` shows contact count, active today, panel topic/memory counts, and daily+total token usage. `/panelfind <query>` searches panel memories by text or topic name (case-insensitive, returns last 10 hits).
+**`admin.py`** — admin-only commands (sent to any of the 6 bots). `PersonaHolder` wraps `PersonaRegistry` so `/reload` can swap the registry in-place.
+
+| Command | Description |
+|---|---|
+| `/ping` | Health check |
+| `/reset` | Clear conversation history for current chat/topic |
+| `/cost` | Token usage + approximate USD spend (daily + all-time) |
+| `/reload` | Hot-reload `personas.yaml` without restart |
+| `/contacts` | List known contacts with mute status (🔇) |
+| `/stats` | Contact count, active today, panel topics/memories, token usage |
+| `/panelfind <query>` | Search panel memories by text or topic (last 10 hits) |
+| `/panelstatus` | Show panel lock state, active round, pending reminders |
+| `/personas` | List all loaded personas with provider and model |
+| `/panelschedule HH:MM Topic` | Schedule a one-off panel round at a specific local time |
+| `/panelcancel` | Cancel a pending scheduled panel round |
+| `/panelbest` | Show the panel memory with the highest score |
+| `/panelworst` | Show the panel memory with the lowest score |
 
 ### Persona system (`personas.yaml`)
 
@@ -114,7 +142,22 @@ Each persona specifies `provider`, `system_prompt`, `max_tokens`, `fallback`, an
 
 ### Multi-model routing
 
-Each persona declares its own `provider`. `AIRegistry.get_client(provider)` returns the right client. `ClaudeClient` is the only client with a circuit breaker and Groq fallback. All other clients (`GroqClient`, `OpenRouterClient`, `GeminiClient`) expose the same `AIClient` Protocol and track `usage` (input/output/cache_read tokens).
+Each persona declares its own `provider`. `AIRegistry.get_client(provider)` returns the right client. `ClaudeClient` is the only client with a circuit breaker and Groq fallback. All other clients expose the same `AIClient` Protocol and track `usage` (input/output/cache_read tokens).
+
+Registered provider keys and their backends:
+
+| Provider key | Client class | Backend |
+|---|---|---|
+| `claude` | `ClaudeClient` | Anthropic Claude (circuit breaker + Groq fallback) |
+| `groq` | `GroqClient` | Groq (llama-3.3-70b-versatile) |
+| `openrouter_deepseek` | `OpenRouterClient` | DeepSeek via OpenRouter |
+| `openrouter_owl` | `OpenRouterClient` | Owl Alpha via OpenRouter |
+| `openrouter_gemini` | `OpenRouterClient` | Gemini Lite via OpenRouter (topic classification) |
+| `openrouter_nemotron` | `OpenRouterClient` | Nvidia Nemotron via OpenRouter |
+| `openmodel` | `OpenModelClient` | deepseek-v4-flash free via OpenModel API |
+| `gemini` | `GeminiClient` | Google Gemini direct API (optional moderator) |
+
+`FallbackClient` wraps OpenRouter/OpenModel providers with Groq as silent fallback when both are present.
 
 ### State persistence
 
