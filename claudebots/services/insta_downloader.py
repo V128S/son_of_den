@@ -1,7 +1,7 @@
 """Instagram media downloader microservice.
 
-Downloads photos, videos and Reels from public Instagram posts using yt-dlp.
-Stories are not supported (require Instagram login).
+Downloads photos, videos, Reels and Stories from Instagram using yt-dlp.
+Stories require browser cookies (set ig_cookies_browser in config / IG_COOKIES_BROWSER in .env).
 
 Public API:
     detect_url(text)       -> str | None   — extract first Instagram URL from text
@@ -22,10 +22,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Matches public post / reel / tv / igtv URLs
+# Matches public post / reel / tv / igtv URLs and stories
 _INSTA_RE = re.compile(
     r"https?://(?:www\.)?instagram\.com/"
-    r"(?:p|reel|reels|tv|igtv)/([A-Za-z0-9_-]+)/?",
+    r"(?:"
+    r"(?:p|reel|reels|tv|igtv)/[A-Za-z0-9_-]+"           # posts / reels
+    r"|stories/(?:highlights/\d+|[A-Za-z0-9._]+(?:/\d+)?)"  # stories / highlights
+    r")/?",
     re.IGNORECASE,
 )
 
@@ -55,8 +58,9 @@ class MediaFile:
 class InstagramDownloader:
     """Downloads Instagram media to a temporary directory using yt-dlp."""
 
-    def __init__(self, timeout: float = 60.0) -> None:
+    def __init__(self, timeout: float = 60.0, cookies_browser: str = "") -> None:
         self.timeout = timeout
+        self.cookies_browser = cookies_browser
 
     # ------------------------------------------------------------------
     # Public async API
@@ -109,7 +113,7 @@ class InstagramDownloader:
 
         tmpdir = tempfile.mkdtemp(prefix="insta_")
 
-        ydl_opts = {
+        ydl_opts: dict = {
             "outtmpl": os.path.join(tmpdir, "%(autonumber)s_%(id)s.%(ext)s"),
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
@@ -123,6 +127,9 @@ class InstagramDownloader:
             "sleep_interval": 1,
             "max_sleep_interval": 3,
         }
+        if self.cookies_browser:
+            # (browser_name, profile, keyring, container)
+            ydl_opts["cookiesfrombrowser"] = (self.cookies_browser, None, None, None)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

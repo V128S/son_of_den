@@ -1468,9 +1468,16 @@ async def handle_private_message(
                 pass
 
             if not _media_files:
+                _is_story = "/stories/" in _insta_url
+                _insta_err = (
+                    "❌ Сторис не удалось скачать. Для сторис нужна авторизация — "
+                    "установите IG_COOKIES_BROWSER=safari в .env"
+                    if _is_story
+                    else "❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна."
+                )
                 await _insta_bot.send_message(
                     chat_id=_insta_send_chat,
-                    text="❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна.",
+                    text=_insta_err,
                     message_thread_id=_insta_thread_id, parse_mode=None,
                 )
                 return
@@ -1677,9 +1684,16 @@ async def handle_private_message(
                 pass
 
             if not _social_files:
+                _is_threads = "threads." in _social_url
+                _social_err = (
+                    "❌ Threads не удалось скачать. Нужна авторизация — "
+                    "установите IG_COOKIES_BROWSER=safari в .env"
+                    if _is_threads
+                    else "❌ Не удалось скачать. Проверьте, что пост публичный."
+                )
                 await _social_bot.send_message(
                     chat_id=_social_send_chat,
-                    text="❌ Не удалось скачать. Проверьте, что пост публичный.",
+                    text=_social_err,
                     message_thread_id=_social_thread_id, parse_mode=None,
                 )
                 return

@@ -1,12 +1,13 @@
-"""Social media downloader for TikTok and X/Twitter.
+"""Social media downloader for TikTok, X/Twitter and Threads.
 
-Downloads videos and photos from public TikTok and X/Twitter posts using yt-dlp.
+Downloads videos and photos from public TikTok, X/Twitter and Threads posts using yt-dlp.
 Re-encodes video to H.264/AAC+faststart for Telegram playback (same as Instagram).
+Threads downloads require browser cookies (ig_cookies_browser / IG_COOKIES_BROWSER).
 
 Public API:
     detect_platform(text) -> tuple[str, str] | None
         Returns (url, topic_name) or None.
-        topic_name is one of: "🎬 TikTok", "🐦 X / Twitter"
+        topic_name is one of: "🎬 TikTok", "🐦 X / Twitter", "🧵 Threads"
 
     SocialDownloader.download(url) -> list[MediaFile]
     SocialDownloader.cleanup(files) -> None
@@ -36,23 +37,33 @@ _TWITTER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Threads: https://www.threads.net/@user/post/CODE, https://threads.net/...
+_THREADS_RE = re.compile(
+    r"https?://(?:www\.)?threads\.(?:net|com)/@[^/\s]+/post/[A-Za-z0-9_-]+/?",
+    re.IGNORECASE,
+)
+
 
 def detect_platform(text: str) -> tuple[str, str] | None:
-    """Return (url, topic_name) for the first TikTok or X/Twitter URL in text, or None."""
+    """Return (url, topic_name) for the first TikTok, X/Twitter or Threads URL in text, or None."""
     m = _TIKTOK_RE.search(text)
     if m:
         return m.group(0), "🎬 TikTok"
     m = _TWITTER_RE.search(text)
     if m:
         return m.group(0), "🐦 X / Twitter"
+    m = _THREADS_RE.search(text)
+    if m:
+        return m.group(0), "🧵 Threads"
     return None
 
 
 class SocialDownloader:
-    """Downloads TikTok / X/Twitter media to a temp directory using yt-dlp."""
+    """Downloads TikTok / X/Twitter / Threads media to a temp directory using yt-dlp."""
 
-    def __init__(self, timeout: float = 90.0) -> None:
+    def __init__(self, timeout: float = 90.0, cookies_browser: str = "") -> None:
         self.timeout = timeout
+        self.cookies_browser = cookies_browser
         # Reuse InstagramDownloader's re-encode + classify helpers
         self._helper = InstagramDownloader.__new__(InstagramDownloader)
 
@@ -84,7 +95,7 @@ class SocialDownloader:
         import yt_dlp
 
         tmpdir = tempfile.mkdtemp(prefix="social_")
-        ydl_opts = {
+        ydl_opts: dict = {
             "outtmpl": os.path.join(tmpdir, "%(autonumber)s_%(id)s.%(ext)s"),
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "merge_output_format": "mp4",
@@ -95,6 +106,9 @@ class SocialDownloader:
             "writethumbnail": False,
             "writeinfojson": False,
         }
+        if self.cookies_browser:
+            # Threads requires a logged-in session; pass browser cookies to yt-dlp
+            ydl_opts["cookiesfrombrowser"] = (self.cookies_browser, None, None, None)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

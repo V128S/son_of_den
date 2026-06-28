@@ -137,3 +137,9 @@ class Settings(BaseSettings):
     # Leave empty to disable.
     expenses_sheet_id: str = ""
 
+    # Browser to extract cookies from for Instagram Stories and Threads downloads.
+    # Must be logged into Instagram / Threads in that browser.
+    # Supported values: "safari", "chrome", "firefox", "edge", "chromium".
+    # Leave empty to disable cookie auth (public posts/reels still work; stories and Threads won't).
+    ig_cookies_browser: str = ""
+

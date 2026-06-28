@@ -324,16 +324,22 @@ async def amain() -> None:
         logger.info("Meters client disabled (GOOGLE_SERVICE_ACCOUNT_FILE or METERS_SHEET_ID not set)")
 
     # Instagram downloader (always available — uses yt-dlp, no credentials needed for public posts)
-    insta_downloader = InstagramDownloader(timeout=90.0)
-    logger.info("Instagram downloader enabled (yt-dlp, public posts and Reels only)")
+    insta_downloader = InstagramDownloader(timeout=90.0, cookies_browser=settings.ig_cookies_browser)
+    if settings.ig_cookies_browser:
+        logger.info("Instagram downloader enabled (posts, reels, stories via %s cookies)", settings.ig_cookies_browser)
+    else:
+        logger.info("Instagram downloader enabled (public posts and reels only; set IG_COOKIES_BROWSER for stories)")
 
     # YouTube audio downloader (always available — uses yt-dlp, no credentials needed for public videos)
     yt_downloader = YTDownloader(timeout=120.0)
     logger.info("YouTube audio downloader enabled (yt-dlp, public videos only)")
 
-    # TikTok / X/Twitter downloader (always available — uses yt-dlp, public posts only)
-    social_downloader = SocialDownloader(timeout=90.0)
-    logger.info("Social downloader enabled (TikTok, X/Twitter via yt-dlp)")
+    # TikTok / X/Twitter / Threads downloader (uses yt-dlp; Threads requires browser cookies)
+    social_downloader = SocialDownloader(timeout=90.0, cookies_browser=settings.ig_cookies_browser)
+    if settings.ig_cookies_browser:
+        logger.info("Social downloader enabled (TikTok, X/Twitter, Threads via %s cookies)", settings.ig_cookies_browser)
+    else:
+        logger.info("Social downloader enabled (TikTok, X/Twitter; set IG_COOKIES_BROWSER for Threads)")
 
     # Exa web search (optional — enriches panel discussions with real-world context)
     search_client = SearchClient(
