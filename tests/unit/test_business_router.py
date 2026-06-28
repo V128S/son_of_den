@@ -352,3 +352,105 @@ async def test_handle_business_message_injects_obsidian_context(
     assert captured_system, "stream was never called"
     assert "ИЗВЕСТНО ОБ ЭТОМ КОНТАКТЕ:" in captured_system[0]
     assert "Оптовый клиент" in captured_system[0]
+
+
+# ---------------------------------------------------------------------------
+# /note command
+# ---------------------------------------------------------------------------
+
+async def test_note_command_writes_to_obsidian(alerts_mock):
+    """Admin types /note in a contact topic → writes to obsidian, replies with confirmation."""
+    _clear_biz_state()
+    from unittest.mock import AsyncMock, MagicMock, patch
+    import claudebots.routers.business as biz_mod
+
+    # Set up contact mapping
+    biz_mod._topic_contacts[99] = 42
+    biz_mod._contact_data[42] = {"name": "Иван", "messages": []}
+
+    obsidian = MagicMock()
+    obsidian.read_contact_context.return_value = None
+    obsidian.write_contact_context = MagicMock()
+
+    settings = MagicMock()
+    settings.admin_user_id = 1000
+
+    msg = MagicMock()
+    msg.text = "/note Оптовый клиент из Харькова"
+    msg.message_thread_id = 99
+    msg.from_user.id = 1000
+    msg.reply = AsyncMock()
+
+    await biz_mod._on_note_command(
+        message=msg,
+        settings=settings,
+        obsidian_client=obsidian,
+    )
+
+    obsidian.write_contact_context.assert_called_once()
+    call_args = obsidian.write_contact_context.call_args
+    assert call_args[0][0] == "Иван"  # contact_name
+    assert call_args[0][1] == 42       # contact_id
+    assert "Оптовый клиент из Харькова" in call_args[0][2]  # context_text
+    msg.reply.assert_awaited_once()
+    assert "Иван" in msg.reply.call_args[0][0]
+
+
+async def test_note_command_rejects_non_contact_topic(alerts_mock):
+    """Admin types /note in a thread that's not a contact topic → warning reply."""
+    _clear_biz_state()
+    from unittest.mock import AsyncMock, MagicMock
+    import claudebots.routers.business as biz_mod
+
+    obsidian = MagicMock()
+    settings = MagicMock()
+    settings.admin_user_id = 1000
+
+    msg = MagicMock()
+    msg.text = "/note Что-то"
+    msg.message_thread_id = 777  # not in _topic_contacts
+    msg.from_user.id = 1000
+    msg.reply = AsyncMock()
+
+    await biz_mod._on_note_command(
+        message=msg,
+        settings=settings,
+        obsidian_client=obsidian,
+    )
+
+    obsidian.write_contact_context.assert_not_called()
+    msg.reply.assert_awaited_once()
+    assert "не топик контакта" in msg.reply.call_args[0][0]
+
+
+async def test_note_command_appends_to_existing_context(alerts_mock):
+    """If contact already has context, new note is appended, not replaced."""
+    _clear_biz_state()
+    from unittest.mock import AsyncMock, MagicMock
+    import claudebots.routers.business as biz_mod
+
+    biz_mod._topic_contacts[99] = 42
+    biz_mod._contact_data[42] = {"name": "Иван", "messages": []}
+
+    obsidian = MagicMock()
+    obsidian.read_contact_context.return_value = "Старая заметка"
+    obsidian.write_contact_context = MagicMock()
+
+    settings = MagicMock()
+    settings.admin_user_id = 1000
+
+    msg = MagicMock()
+    msg.text = "/note Новая заметка"
+    msg.message_thread_id = 99
+    msg.from_user.id = 1000
+    msg.reply = AsyncMock()
+
+    await biz_mod._on_note_command(
+        message=msg,
+        settings=settings,
+        obsidian_client=obsidian,
+    )
+
+    written_context = obsidian.write_contact_context.call_args[0][2]
+    assert "Старая заметка" in written_context
+    assert "Новая заметка" in written_context

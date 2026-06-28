@@ -494,6 +494,60 @@ async def _on_help(message: Message, settings) -> None:
     await message.answer(_HELP_TEXT, parse_mode="Markdown")
 
 
+def _is_note_cmd(text: str | None) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    return t.lower().startswith("/note ") or t.lower() == "/note"
+
+
+@business_router.message(
+    F.text.func(_is_note_cmd),
+    F.chat.type.in_({"private", "supergroup"}),
+)
+async def _on_note_command(
+    message: Message,
+    settings,
+    obsidian_client: "ObsidianClient | None" = None,
+) -> None:
+    """Admin types /note text in a contact's forum topic — saves to Obsidian context."""
+    if not message.from_user or message.from_user.id != settings.admin_user_id:
+        return
+
+    if obsidian_client is None:
+        await message.reply("⚠️ Obsidian не настроен (OBSIDIAN_VAULT_PATH не задан)")
+        return
+
+    text = (message.text or "").strip()
+    note_text = text[len("/note"):].strip()
+    if not note_text:
+        await message.reply("Укажи заметку:\n/note Иван — оптовый клиент из Харькова")
+        return
+
+    thread_id = message.message_thread_id
+    if thread_id is None:
+        await message.reply("⚠️ Эта команда работает только в топике контакта")
+        return
+
+    user_id = _topic_contacts.get(thread_id)
+    if user_id is None:
+        await message.reply("⚠️ Это не топик контакта")
+        return
+
+    contact_info = _contact_data.get(user_id)
+    contact_name = contact_info["name"] if contact_info else f"ID:{user_id}"
+
+    existing = obsidian_client.read_contact_context(contact_name) or ""
+    now_str = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
+    if existing:
+        new_context = f"{existing}\n[{now_str}] {note_text}"
+    else:
+        new_context = f"[{now_str}] {note_text}"
+
+    obsidian_client.write_contact_context(contact_name, user_id, new_context)
+    await message.reply(f"✅ Добавил в контекст {contact_name}")
+
+
 @business_router.message(F.text & F.chat.type.in_({"private", "supergroup"}) & ~F.forward_from_chat & ~F.forward_origin)
 async def _on_private_message(
     message: Message,
