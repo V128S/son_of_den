@@ -660,6 +660,18 @@ wheels = [
 ]
 
 [[package]]
+name = "gallery-dl"
+version = "1.32.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/68/19f4f5996f22ef68b975bd34c2845829e692bdf25aacf9d654755e326056/gallery_dl-1.32.4.tar.gz", hash = "sha256:9804e0584efa3fe41a4ab4f8d34132b6d4fa0dd1c57be324730461b6eb39a81d", size = 719040, upload-time = "2026-06-22T07:49:41.9Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/f5/cb9c71bc9eff2d062ec0298e6ac9512021d6a459a75b3ac8969289c6651a/gallery_dl-1.32.4-py3-none-any.whl", hash = "sha256:790fcc5422f61c073914fbfcd1af8b4e681b755afde5c8830283a8061d10781d", size = 891276, upload-time = "2026-06-22T07:49:37.859Z" },
+]
+
+[[package]]
 name = "google-api-core"
 version = "2.31.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2029,6 +2041,7 @@ dependencies = [
     { name = "aiogram" },
     { name = "anthropic" },
     { name = "caldav" },
+    { name = "gallery-dl" },
     { name = "google-api-python-client" },
     { name = "google-auth" },
     { name = "google-genai" },
@@ -2057,6 +2070,7 @@ requires-dist = [
     { name = "aiogram", specifier = ">=3.14.0" },
     { name = "anthropic", specifier = ">=0.40.0" },
     { name = "caldav", specifier = ">=1.3.0" },
+    { name = "gallery-dl", specifier = ">=1.32.4" },
     { name = "google-api-python-client", specifier = ">=2.128.0" },
     { name = "google-auth", specifier = ">=2.29.0" },
     { name = "google-genai", specifier = ">=1.0.0" },
