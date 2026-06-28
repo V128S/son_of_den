@@ -190,7 +190,7 @@ class ObsidianClient:
                 # Replace the existing section (everything up to next ## or end-of-file)
                 content = re.sub(
                     r"## Контекст\n.*?(?=\n##|\Z)",
-                    context_block,
+                    lambda _: context_block,
                     content,
                     flags=re.DOTALL,
                 )
