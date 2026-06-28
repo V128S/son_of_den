@@ -1119,9 +1119,12 @@ async def handle_business_message(
     if obsidian_client is not None and message.from_user:
         _fu = message.from_user
         _obs_name = _fu.full_name or _fu.username or f"ID:{_fu.id}"
-        _obs_ctx = obsidian_client.read_contact_context(_obs_name)
-        if _obs_ctx:
-            contact_context = f"\n\nИЗВЕСТНО ОБ ЭТОМ КОНТАКТЕ:\n{_obs_ctx}"
+        try:
+            _obs_ctx = obsidian_client.read_contact_context(_obs_name)
+            if _obs_ctx:
+                contact_context = f"\n\nИЗВЕСТНО ОБ ЭТОМ КОНТАКТЕ:\n{_obs_ctx}"
+        except Exception as _obs_err:
+            logger.debug("Obsidian read_contact_context failed for %s: %s", _obs_name, _obs_err)
 
     system_prompt = await _build_system_prompt(
         persona.system_prompt, calendar_client, extra_context=contact_context
