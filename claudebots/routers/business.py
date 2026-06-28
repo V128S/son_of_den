@@ -77,6 +77,11 @@ _biz_state_path: Path | None = None
 # Latest inbound message per contact for the "Ask Panel" inline button
 _pending_panel_asks: dict[int, str] = {}
 
+# Timestamp of last inbound message per contact — used by auto-summary checker
+_contact_last_msg_ts: dict[int, float] = {}
+# Timestamp of last summary sent per contact — prevents duplicate summaries
+_contact_summary_sent: dict[int, float] = {}
+
 # Expense detection: keyword + amount pattern
 _EXPENSE_KW_RE = _re.compile(
     r"\b(потратил|заплатил|купил|стоит|обошлось|расход|трата|уплатил)\b",
@@ -922,6 +927,7 @@ async def handle_business_message(
 
         # Track daily contact activity for digest
         _contact_today[user.id] = _contact_today.get(user.id, 0) + 1
+        _contact_last_msg_ts[user.id] = time.time()
 
         # Log to Obsidian vault
         if obsidian_client is not None:
@@ -959,8 +965,17 @@ async def handle_business_message(
         logger.info("AI reply skipped for muted contact %d", message.from_user.id)
         return
 
+    # Read long-term contact context from Obsidian and inject into prompt
+    contact_context = ""
+    if obsidian_client is not None and message.from_user:
+        _fu = message.from_user
+        _obs_name = _fu.full_name or _fu.username or f"ID:{_fu.id}"
+        _obs_ctx = obsidian_client.read_contact_context(_obs_name)
+        if _obs_ctx:
+            contact_context = f"\n\nИЗВЕСТНО ОБ ЭТОМ КОНТАКТЕ:\n{_obs_ctx}"
+
     system_prompt = await _build_system_prompt(
-        persona.system_prompt, calendar_client,
+        persona.system_prompt, calendar_client, extra_context=contact_context
     )
 
     # ── Exa web enrichment (Feature 13) ──────────────────────────────────────

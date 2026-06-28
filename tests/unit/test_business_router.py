@@ -7,6 +7,7 @@ from integration tests) and clean up afterwards.
 from unittest.mock import AsyncMock, MagicMock
 
 import claudebots.routers.business as biz_mod
+from claudebots.routers.business import handle_business_message
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -296,3 +297,58 @@ async def test_classify_owner_category_strips_quotes():
 
     result = await biz_mod._classify_owner_category("расходы", reg)
     assert result == "💰 Финансы"
+
+
+# ---------------------------------------------------------------------------
+# Obsidian context injection
+# ---------------------------------------------------------------------------
+
+async def test_handle_business_message_injects_obsidian_context(
+    conv, personas, ai_registry_mock, bot_mocks, alerts_mock
+):
+    """When obsidian_client has context for a contact, it's injected into system prompt."""
+    _clear_biz_state()
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    obsidian = MagicMock()
+    obsidian.read_contact_context.return_value = "Оптовый клиент. Торгуется."
+    obsidian.log_message = MagicMock()
+
+    captured_system = []
+
+    # The fixture shares one mock client across all providers
+    mock_client = ai_registry_mock.get_client("claude")
+
+    async def capturing_stream(*, system, messages, max_tokens):
+        captured_system.append(system)
+        yield "Окей"
+
+    mock_client.stream = capturing_stream
+
+    msg = MagicMock()
+    msg.text = "Интересует оптовая цена"
+    msg.business_connection_id = "conn1"
+    msg.chat.id = 111
+    msg.from_user.id = 42
+    msg.from_user.full_name = "Иван"
+    msg.from_user.username = "ivan"
+
+    bot = bot_mocks["business"]
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1, chat=MagicMock(id=111)))
+    bot.edit_message_text = AsyncMock()
+    bot.send_chat_action = AsyncMock()
+
+    await handle_business_message(
+        message=msg,
+        bot=bot,
+        ai_registry=ai_registry_mock,
+        conv=conv,
+        personas=personas,
+        alerts=alerts_mock,
+        obsidian_client=obsidian,
+    )
+
+    obsidian.read_contact_context.assert_called_once_with("Иван")
+    assert captured_system, "stream was never called"
+    assert "ИЗВЕСТНО ОБ ЭТОМ КОНТАКТЕ:" in captured_system[0]
+    assert "Оптовый клиент" in captured_system[0]
