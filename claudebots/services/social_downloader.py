@@ -226,6 +226,13 @@ class SocialDownloader:
         if not video_url and not image_url:
             video_url, image_url = _extract_next_data_media(page_html)
 
+        # Strategy 3: Playwright headless browser (captures actual video CDN requests)
+        # Used when OG/JSON scraping finds no video — Threads only serves video URLs via JS.
+        if not video_url:
+            pw_video_url = self._download_threads_playwright_sync(url, tmpdir)
+            if pw_video_url:
+                return pw_video_url
+
         if not video_url and not image_url:
             logger.warning(
                 "Threads: no media found — cookies loaded=%s. "
@@ -255,6 +262,100 @@ class SocialDownloader:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
         return result
+
+    def _download_threads_playwright_sync(
+        self, url: str, tmpdir: str
+    ) -> list[MediaFile] | None:
+        """Use a headless Chromium browser to capture the CDN video URL for a Threads post.
+
+        Returns a list of MediaFile on success, None if playwright is unavailable or
+        no video URL was intercepted (caller should fall through to image fallback).
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.debug("Threads playwright fallback: playwright not installed")
+            return None
+
+        cookies = self._load_cookies()
+        if not cookies:
+            logger.debug("Threads playwright fallback: no cookies — skipping")
+            return None
+
+        logger.debug("Threads playwright fallback: launching Chromium for %s", url)
+
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                ctx = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/125.0.0.0 Safari/537.36"
+                    )
+                )
+
+                # Inject auth cookies at context level (supports HttpOnly sessionid)
+                ctx.add_cookies([
+                    {
+                        "name": name,
+                        "value": value,
+                        "domain": ".threads.com",
+                        "path": "/",
+                        "secure": True,
+                        "httpOnly": name == "sessionid",
+                    }
+                    for name, value in cookies.items()
+                ])
+
+                page = ctx.new_page()
+
+                # Intercept CDN video requests before they fire
+                video_url: list[str] = []
+
+                def _on_request(req: object) -> None:
+                    u = getattr(req, "url", "")
+                    if ".mp4" in u and ("fbcdn.net" in u or "cdninstagram.com" in u):
+                        if not video_url:
+                            video_url.append(u)
+
+                page.on("request", _on_request)
+
+                try:
+                    page.goto(url, wait_until="networkidle", timeout=25000)
+                except Exception as e:
+                    logger.debug("Threads playwright: goto timeout/error — %s", e)
+
+                # Fallback: read src directly from <video> element
+                if not video_url:
+                    try:
+                        src = page.evaluate(
+                            "() => { const v = document.querySelector('video'); "
+                            "return v ? (v.src || v.currentSrc) : null; }"
+                        )
+                        if src and "fbcdn.net" in src:
+                            video_url.append(src)
+                    except Exception:
+                        pass
+
+                browser.close()
+        except Exception as e:
+            logger.warning("Threads playwright fallback failed: %s", e)
+            return None
+
+        if not video_url:
+            logger.debug("Threads playwright: no video URL intercepted")
+            return None
+
+        cdn_url = video_url[0]
+        logger.info("Threads playwright: intercepted video URL %s…", cdn_url[:80])
+
+        path = self._fetch_media(cdn_url, tmpdir, "video.mp4", {}, {})
+        if not path:
+            return None
+
+        path = InstagramDownloader._reencode_for_telegram(path)
+        return [MediaFile(path=path, media_type="video")]
 
     def _load_cookies(self) -> dict[str, str]:
         """Load Meta/Threads cookies from file (preferred) or browser."""
