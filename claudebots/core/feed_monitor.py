@@ -330,7 +330,7 @@ class FeedMonitor:
             result = await self._ai_registry.get_client(self._scoring_provider).complete(
                 messages=[{"role": "user", "content": prompt}],
                 system="",
-                max_tokens=5,
+                max_tokens=512,  # thinking models need room before the text block
             )
             return max(0, min(10, int(result.strip().split()[0])))
         except Exception as e:
@@ -372,38 +372,66 @@ async def _fetch_channel_entries_raw(
     return [(u, t, tx, ts) for u, t, tx, ts in entries if ts >= since_ts]
 
 
-# Editorial digest — one coherent morning post in a single voice.
-# Replaces the old per-channel bullet summary, which read as disjointed chunks.
+# Editorial digest — structured 6-7 item post: politics first, then tech/finance.
 _DIGEST_SYSTEM = (
-    "Ты — главный редактор утреннего новостного дайджеста для занятого "
-    "предпринимателя из Украины. По постам новостного канала за прошедшие сутки "
-    "пишешь ОДИН связный пост от одного лица — без диалогов, без разбивки по "
-    "каналам, без панели экспертов.\n\n"
+    "Ты — главный редактор ежедневного дайджеста для предпринимателя из Украины. "
+    "Составь ровно 6-7 новостных блоков в строго заданной структуре.\n\n"
+    "СТРУКТУРА (соблюдай порядок):\n"
+    "── РАЗДЕЛ 1: ПОЛИТИКА И ВОЙНА (2-3 блока) ──\n"
+    "Выбери 2-3 самых важных политических события: война, дипломатия, санкции, выборы.\n\n"
+    "── РАЗДЕЛ 2: ТЕХНОЛОГИИ, ФИНАНСЫ, КРИПТА (3-4 блока) ──\n"
+    "Выбери 3-4 значимых события: рынки, ИИ, криптовалюта, бизнес, стартапы.\n\n"
     "ПРАВИЛА:\n"
-    "- Пиши ТОЛЬКО на русском языке. Ни одного слова или метки на другом языке.\n"
-    "- Не упоминай и не рекомендуй российские компании и сервисы (Яндекс, "
-    "Сбербанк, ВКонтакте, Mail.ru, 2ГИС и подобные) — бери международные или "
-    "украинские аналоги.\n"
-    "- Без markdown, без заголовков-решёток, без нумерации и буллетов.\n"
-    "- Не выдумывай факты: только то, что есть в постах. Если данных мало — "
-    "скажи это прямо и кратко, не додумывай.\n"
-    "- НЕ ПОВТОРЯЙ одни и те же мысли в разных блоках.\n\n"
-    "СТРУКТУРА — ровно три блока, каждый с новой строки и со своей меткой:\n"
-    "Главное: два-три ключевых события дня — конкретно, что произошло.\n"
-    "Почему важно: развёрнуто объясни смысл для бизнеса, рынков и технологий — "
-    "минимум два-три предложения.\n"
-    "Что делать: один-два практических вывода или наблюдения для предпринимателя.\n\n"
-    "Объём — 200–280 слов. Не обрывай текст на полуслове. "
-    "Живой, плотный язык, без воды."
+    "- Пиши ТОЛЬКО на русском языке. Переводи технические термины, "
+    "аббревиатуры и английские слова (кроме имён собственных).\n"
+    "- Не упоминай российские компании (Яндекс, Сбербанк, ВКонтакте, Mail.ru и подобные).\n"
+    "- Только факты из постов, без домысливания.\n"
+    "- Каждый блок — уникальное событие, без повторов.\n"
+    "- Конкретика: цифры, имена, суммы, даты.\n\n"
+    "ФОРМАТ — строго Telegram HTML, разрешены теги <b>, <i>, <blockquote>:\n\n"
+    "<b>⚔️ Заголовок политической новости</b>\n"
+    "3-4 предложения: что произошло, детали, контекст.\n"
+    "<blockquote><i>→ Значение для Украины / бизнеса.</i></blockquote>\n\n"
+    "<b>💰 Заголовок финансовой/технологической новости</b>\n"
+    "3-4 предложения.\n"
+    "<blockquote><i>→ Практический вывод.</i></blockquote>\n\n"
+    "Каждый блок отделён пустой строкой. "
+    "Эмодзи в заголовках: политика — ⚔️🇺🇦🌍🔴; технологии/финансы — 💰🤖📊💎🚀. "
+    "Никакого markdown (#, *, `, -), никаких заголовков разделов в тексте. "
+    "Каждый блок — 60-80 слов. Живой язык без воды."
 )
 
-_MD_RE = re.compile(r"(^\s*#{1,6}\s+|\*{1,3}|`+|^\s*[-*•]\s+)", re.MULTILINE)
+_ALLOWED_TAGS_RE = re.compile(r"</?(?:b|i|blockquote)>", re.IGNORECASE)
 
 
-def _strip_markdown(text: str) -> str:
-    """Drop markdown markers the model occasionally adds despite the prompt."""
-    text = _MD_RE.sub("", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+def _sanitize_html(text: str) -> str:
+    """Escape stray & < > while keeping allowed Telegram HTML tags (<b>, <i>).
+
+    Also balances unclosed tags so Telegram never rejects the message.
+    """
+    parts = _ALLOWED_TAGS_RE.split(text)
+    tags = _ALLOWED_TAGS_RE.findall(text)
+    result: list[str] = []
+    for i, part in enumerate(parts):
+        part = part.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        result.append(part)
+        if i < len(tags):
+            result.append(tags[i].lower())
+    text = "".join(result)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    # Close any tags left open by the model
+    stack: list[str] = []
+    for m in re.finditer(r"<(/?)([bi]|blockquote)>", text):
+        closing, tag = m.group(1), m.group(2)
+        if not closing:
+            stack.append(tag)
+        elif stack and stack[-1] == tag:
+            stack.pop()
+    for tag in reversed(stack):
+        text += f"</{tag}>"
+
+    return text
 
 
 async def build_daily_digest(
@@ -452,9 +480,9 @@ async def build_daily_digest(
         digest = await client.complete(
             system=f"{_DIGEST_SYSTEM}\n\nИнтересы читателя: {interests}.",
             messages=[{"role": "user", "content": f"Посты канала за последние 24 часа:\n\n{block}"}],
-            max_tokens=1100,
+            max_tokens=2200,
         )
-        digest = _strip_markdown(digest or "")
+        digest = _sanitize_html(digest or "")
         return digest or None
     except Exception as e:
         logger.warning("Digest: AI summarisation failed: %s", e)
@@ -486,19 +514,50 @@ async def _digest_loop(
                 interests=interests,
             )
             if digest:
-                header = f"📰 Утренний дайджест · {datetime.now(tz).strftime('%d.%m.%Y')}\n\n"
-                # parse_mode=None: the digest is free-form text and must never
-                # fail to send on a stray '<' or '&'.
-                await bot.send_message(
-                    chat_id=panel_chat_id,
-                    text=header + digest,
-                    parse_mode=None,
+                date_str = datetime.now(tz).strftime("%d.%m.%Y")
+                header = f"📰 <b>Дайджест</b> · {date_str}\n\n"
+                chunks = _split_digest(digest)
+                for i, chunk in enumerate(chunks):
+                    text = (header if i == 0 else "") + chunk
+                    await bot.send_message(
+                        chat_id=panel_chat_id,
+                        text=text,
+                        parse_mode="HTML",
+                    )
+                    if i < len(chunks) - 1:
+                        await asyncio.sleep(1)
+                logger.info(
+                    "Daily digest posted to chat %d (%d chars, %d message(s))",
+                    panel_chat_id, len(digest), len(chunks),
                 )
-                logger.info("Daily digest posted to chat %d (%d chars)", panel_chat_id, len(digest))
             else:
                 logger.info("Daily digest: no fresh material — skipping today's post")
         except Exception as e:
             logger.warning("Digest loop error: %s", e)
+
+
+_TG_MSG_LIMIT = 4000  # Telegram hard-caps at 4096; leave margin for header
+
+
+def _split_digest(text: str, limit: int = _TG_MSG_LIMIT) -> list[str]:
+    """Split digest into Telegram-safe chunks, breaking on blank lines between blocks."""
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for block in text.split("\n\n"):
+        block_len = len(block) + 2  # +2 for the \n\n separator
+        if current_len + block_len > limit and current:
+            parts.append("\n\n".join(current))
+            current = [block]
+            current_len = block_len
+        else:
+            current.append(block)
+            current_len += block_len
+    if current:
+        parts.append("\n\n".join(current))
+    return parts
 
 
 def start_digest_scheduler(

@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     google_calendar_id: str = "primary"
     user_timezone: str = "Europe/Moscow"
 
+    # iCloud Calendar Integration (CalDAV).
+    # Takes precedence over Google Calendar when both are configured.
+    # app_password: create at appleid.apple.com → Sign-In and Security → App-Specific Passwords.
+    icloud_username: str = ""
+    icloud_app_password: str = ""
+    icloud_calendar_name: str = ""  # empty = all calendars
+
     log_level: str = "INFO"
     # Log file path. Empty string = stdout only (Docker/systemd mode).
     log_file: str = ""
@@ -72,6 +79,11 @@ class Settings(BaseSettings):
     # Comma-separated list of channel slugs, e.g. "durov,techcrunch".
     # Empty string disables the feed monitor entirely.
     feed_channels: str = ""
+    # Master switch for all panel/group functionality.
+    # False → only the business bot runs; all panel bots, panel router,
+    # revival/reminder/news/feed tasks are disabled.
+    panel_enabled: bool = True
+
     # When False, channels are still fetched for the daily digest, but the feed
     # monitor never auto-triggers panel rounds (no random-time discussions).
     feed_monitor_enabled: bool = True

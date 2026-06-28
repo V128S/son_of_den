@@ -7,8 +7,8 @@ import pytest
 from claudebots.core.feed_monitor import (
     FeedMonitor,
     _parse_rss,
+    _sanitize_html,
     _strip_html,
-    _strip_markdown,
     build_daily_digest,
 )
 
@@ -399,13 +399,14 @@ async def test_empty_channels_no_http(tmp_path):
 # build_daily_digest — one editorial post, prefers openmodel
 # ---------------------------------------------------------------------------
 
-def test_strip_markdown_removes_markers():
-    raw = "## Заголовок\n**жирный** и `код`\n- пункт\n• буллет"
-    out = _strip_markdown(raw)
-    assert "#" not in out
-    assert "*" not in out
-    assert "`" not in out
-    assert out.startswith("Заголовок")
+def test_sanitize_html_keeps_allowed_tags():
+    raw = "<b>Заголовок</b>\nТекст <i>курсив</i> и <br> & стрелка > 5."
+    out = _sanitize_html(raw)
+    assert "<b>Заголовок</b>" in out
+    assert "<i>курсив</i>" in out
+    assert "&amp;" in out
+    assert "&lt;br&gt;" in out
+    assert "&gt; 5" in out
 
 
 @pytest.mark.asyncio

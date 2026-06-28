@@ -10,6 +10,7 @@ from claudebots.core import state as _state
 from claudebots.core.ai_registry import AIClient, AIRegistry, FallbackClient
 from claudebots.core.alerts import AlertSender
 from claudebots.core.calendar_client import GoogleCalendarClient
+from claudebots.core.icloud_calendar_client import ICloudCalendarClient
 from claudebots.core.claude_client import ClaudeClient
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
@@ -244,8 +245,9 @@ async def amain() -> None:
     # Validate that all required providers are available
     required_providers: set[str] = set()
     required_providers.add(registry.business_assistant.provider)
-    for p in registry.all_panel():
-        required_providers.add(p.provider)
+    if settings.panel_enabled:
+        for p in registry.all_panel():
+            required_providers.add(p.provider)
 
     missing = required_providers - set(clients.keys())
     if missing:
@@ -267,11 +269,20 @@ async def amain() -> None:
     bots = create_all_bots(settings)
     alerts = AlertSender(bot=bots["business"], admin_user_id=settings.admin_user_id)
 
-    calendar_client = GoogleCalendarClient(
-        service_account_file=settings.google_service_account_file,
-        calendar_id=settings.google_calendar_id,
-        timezone_str=settings.user_timezone,
-    )
+    if settings.icloud_username and settings.icloud_app_password:
+        calendar_client: GoogleCalendarClient | ICloudCalendarClient = ICloudCalendarClient(
+            username=settings.icloud_username,
+            app_password=settings.icloud_app_password,
+            calendar_name=settings.icloud_calendar_name,
+            timezone_str=settings.user_timezone,
+        )
+        logger.info("iCloud Calendar client enabled (user=%s)", settings.icloud_username)
+    else:
+        calendar_client = GoogleCalendarClient(
+            service_account_file=settings.google_service_account_file,
+            calendar_id=settings.google_calendar_id,
+            timezone_str=settings.user_timezone,
+        )
 
     # Obsidian vault client (disabled when OBSIDIAN_VAULT_PATH is empty)
     obsidian_client: ObsidianClient | None = None
@@ -357,8 +368,12 @@ async def amain() -> None:
         workflow["claude"] = claude
     dp.workflow_data.update(workflow)
 
-    # Panel router must be first to handle panel messages before business router
-    dp.include_routers(*ROUTER_ORDER)
+    # Panel router is first when enabled; skip it when panel_enabled=False
+    if settings.panel_enabled:
+        active_routers = list(ROUTER_ORDER)
+    else:
+        active_routers = [admin_router, business_router]
+    dp.include_routers(*active_routers)
 
     @dp.error()
     async def on_error(event: ErrorEvent) -> bool:
@@ -412,9 +427,9 @@ async def amain() -> None:
 
     logger.info("Starting polling on %d bots", len(bots))
 
-    # Start revival scheduler (disabled when interval == 0)
+    # Start revival scheduler (disabled when panel is off or interval == 0)
     revival_task: asyncio.Task[None] | None = None
-    if settings.panel_revival_interval_hours > 0:
+    if settings.panel_enabled and settings.panel_revival_interval_hours > 0:
         revival_task = start_revival_scheduler(
             bots=bots,
             personas=persona_holder.registry,
@@ -448,10 +463,12 @@ async def amain() -> None:
         )
 
     # Start reminder checker (re-surfaces action items after 18-20 h)
-    reminder_task: asyncio.Task[None] = start_reminder_checker(
-        bots=bots,
-        panel_chat_id=settings.panel_chat_id,
-    )
+    reminder_task: asyncio.Task[None] | None = None
+    if settings.panel_enabled:
+        reminder_task = start_reminder_checker(
+            bots=bots,
+            panel_chat_id=settings.panel_chat_id,
+        )
 
     # Start morning briefing scheduler
     briefing_task: asyncio.Task[None] | None = None
@@ -469,7 +486,7 @@ async def amain() -> None:
 
     # Start daily news panel (once-a-day discussion at configured local time)
     daily_news_task: asyncio.Task[None] | None = None
-    if settings.daily_news_panel_time:
+    if settings.panel_enabled and settings.daily_news_panel_time:
         news_interests = settings.daily_news_interests or settings.feed_interests
         daily_news_task = start_daily_news_panel(
             panel_time=settings.daily_news_panel_time,
@@ -489,7 +506,7 @@ async def amain() -> None:
     # Start feed monitor (auto-topics from Telegram channel RSS)
     feed_task: asyncio.Task[None] | None = None
     feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
-    if feed_channels and settings.feed_monitor_enabled:
+    if settings.panel_enabled and feed_channels and settings.feed_monitor_enabled:
         feed_task = start_feed_monitor(
             channels=feed_channels,
             interests=settings.feed_interests,
@@ -514,7 +531,7 @@ async def amain() -> None:
     # Start the daily morning digest — one coherent editorial post per day,
     # built from the channels' last 24 h and written by deepseek-v4-flash.
     feed_digest_task: asyncio.Task[None] | None = None
-    if settings.feed_digest_time and feed_channels:
+    if settings.panel_enabled and settings.feed_digest_time and feed_channels:
         feed_digest_task = start_feed_digest(
             digest_time=settings.feed_digest_time,
             channels=feed_channels,
@@ -548,8 +565,15 @@ async def amain() -> None:
     else:
         logger.info("Follow-up monitor disabled (CONTACT_FOLLOWUP_DAYS=0)")
 
+    active_bots = list(bots.values()) if settings.panel_enabled else [bots["business"]]
+    logger.info(
+        "Panel %s — polling %d bot(s): %s",
+        "enabled" if settings.panel_enabled else "DISABLED",
+        len(active_bots),
+        [b.token[:10] + "..." for b in active_bots],
+    )
     try:
-        await dp.start_polling(*bots.values())
+        await dp.start_polling(*active_bots)
     finally:
         guardian_task.cancel()
         try:
@@ -573,11 +597,12 @@ async def amain() -> None:
                 await digest_task
             except asyncio.CancelledError:
                 pass
-        reminder_task.cancel()
-        try:
-            await reminder_task
-        except asyncio.CancelledError:
-            pass
+        if reminder_task is not None:
+            reminder_task.cancel()
+            try:
+                await reminder_task
+            except asyncio.CancelledError:
+                pass
         if briefing_task is not None:
             briefing_task.cancel()
             try:

@@ -2,12 +2,15 @@
 
 Sends a daily AI-generated briefing to the admin at a configurable time.
 The briefing combines:
-- Today's Google Calendar events
+- Today's calendar events (iCloud or Google)
 - Recent panel memory takeaways
 - A short AI summary tying it all together
+
+Uses Telegram HTML parse mode for rich formatting.
 """
 
 import asyncio
+import html
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -15,13 +18,18 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 
+def _e(text: str) -> str:
+    """Escape text for Telegram HTML."""
+    return html.escape(text)
+
+
 async def _build_briefing(
     *,
     timezone_str: str,
-    calendar_client,  # GoogleCalendarClient | None
+    calendar_client,  # GoogleCalendarClient | ICloudCalendarClient | None
     ai_registry,  # AIRegistry
 ) -> str:
-    """Build the morning briefing text. Returned string is ready to send."""
+    """Build the morning briefing HTML text. Returned string is ready to send."""
     tz = ZoneInfo(timezone_str)
     now = datetime.now(tz)
 
@@ -30,7 +38,7 @@ async def _build_briefing(
                  "июля", "августа", "сентября", "октября", "ноября", "декабря"]
     date_str = f"{ru_weekdays[now.weekday()]}, {now.day} {ru_months[now.month]}"
 
-    parts: list[str] = [f"🌅 Утренний брифинг — {date_str}\n"]
+    parts: list[str] = [f"<b>🌅 Утренний брифинг — {_e(date_str)}</b>\n"]
 
     # ── Calendar events ────────────────────────────────────────────────────────
     calendar_block = ""
@@ -39,9 +47,9 @@ async def _build_briefing(
             today_events = await calendar_client.get_upcoming_events_summary(days=1)
             if today_events and today_events not in ("", "Нет запланированных событий на ближайшие дни."):
                 calendar_block = today_events
-                parts.append("📅 Сегодня:\n" + today_events + "\n")
+                parts.append(f"<b>📅 Сегодня:</b>\n{_e(today_events)}\n")
             else:
-                parts.append("📅 Событий на сегодня нет.\n")
+                parts.append("📅 <i>Событий на сегодня нет.</i>\n")
         except Exception as e:
             logger.warning("Briefing: calendar fetch failed: %s", e)
 
@@ -54,21 +62,21 @@ async def _build_briefing(
 
     memory_block = ""
     if recent_memories:
-        parts.append("🧠 Последние выводы панели:")
+        parts.append("<b>🧠 Последние выводы панели:</b>")
         lines = []
         for mem in recent_memories:
             if isinstance(mem, dict):
-                label = f"[{mem['topic']}] " if mem.get("topic") else ""
-                lines.append(f"• {label}{mem['text']}")
+                label = f"[{_e(mem['topic'])}] " if mem.get("topic") else ""
+                lines.append(f"• {label}{_e(mem['text'])}")
             elif isinstance(mem, str):
-                lines.append(f"• {mem}")
+                lines.append(f"• {_e(mem)}")
         memory_block = "\n".join(lines)
         parts.append(memory_block + "\n")
 
     # ── AI summary ─────────────────────────────────────────────────────────────
     ai_summary = ""
+    used_provider = ""
     try:
-        # Use the cheapest available provider for summarization
         for provider_name in ("openrouter_gemini", "groq", "claude"):
             if ai_registry.has_provider(provider_name):
                 client = ai_registry.get_client(provider_name)
@@ -83,22 +91,31 @@ async def _build_briefing(
 
                 prompt = (
                     "\n\n".join(context_parts) + "\n\n"
-                    "Напиши краткий (2-3 предложения) утренний брифинг-прогноз на день. "
+                    "Напиши утренний прогноз на день — 2-3 предложения на русском языке. "
                     "Что важно не забыть, что может быть актуально из прошлых обсуждений. "
-                    "Живым языком, без markdown."
+                    "Живым языком. Только сам текст, без заголовков и пояснений."
                 )
                 ai_summary = await client.complete(
-                    system="Ты личный ассистент, помогаешь начать день продуктивно.",
+                    system=(
+                        "Ты личный ассистент, помогаешь начать день продуктивно. "
+                        "Отвечай ТОЛЬКО кратким текстом на русском языке — без мета-комментариев, "
+                        "без пояснений задачи, без ссылок на контекст или инструкции. "
+                        "Только сам текст брифинга."
+                    ),
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=150,
                 )
                 ai_summary = ai_summary.strip()
+                used_provider = provider_name
                 break
     except Exception as e:
         logger.warning("Briefing: AI summary failed: %s", e)
 
     if ai_summary:
-        parts.append("💬 " + ai_summary)
+        parts.append(f"<blockquote>💬 {_e(ai_summary)}</blockquote>")
+
+    if used_provider:
+        logger.debug("Briefing AI summary generated by: %s", used_provider)
 
     return "\n".join(parts)
 
@@ -116,7 +133,6 @@ async def _briefing_loop(
     from claudebots.core.scheduling import daily_at
 
     tz = ZoneInfo(timezone_str)
-    # Wall-clock polling so a briefing missed during macOS sleep fires on wake.
     async for _ in daily_at(briefing_time, tz, label="Briefing scheduler", log=logger):
         try:
             text = await _build_briefing(
@@ -124,7 +140,7 @@ async def _briefing_loop(
                 calendar_client=calendar_client,
                 ai_registry=ai_registry,
             )
-            await bot.send_message(admin_user_id, text, parse_mode=None)
+            await bot.send_message(admin_user_id, text, parse_mode="HTML")
             logger.info("Morning briefing sent to admin")
         except asyncio.CancelledError:
             raise
