@@ -145,7 +145,9 @@ class SocialDownloader:
             "writethumbnail": False,
             "writeinfojson": False,
         }
-        if self.cookies_browser:
+        if self.cookies_file:
+            ydl_opts["cookiefile"] = self.cookies_file
+        elif self.cookies_browser:
             ydl_opts["cookiesfrombrowser"] = (self.cookies_browser, None, None, None)
 
         try:

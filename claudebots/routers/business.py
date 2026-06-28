@@ -60,6 +60,9 @@ _contact_today: dict[int, int] = {}
 # Per-user creation locks — prevent duplicate topics from burst messages
 _create_topic_locks: dict[int, asyncio.Lock] = {}
 
+# Per-platform-key creation locks — prevent concurrent downloads creating duplicate named topics
+_media_topic_locks: dict[str, asyncio.Lock] = {}
+
 # Hard cap on the number of contacts stored in memory.
 # When exceeded, the oldest (first-inserted) contact is evicted.
 _MAX_CONTACTS: int = 500
@@ -1245,48 +1248,52 @@ async def _prepare_media_send(
 
     if is_supergroup:
         import asyncio as _aio
-        cached = _admin_topics.get(topic_key)
         auto_topic = message.message_thread_id  # topic Telegram auto-created for this msg
 
-        if cached is not None:
-            # Re-use existing platform topic; close the auto-created URL topic if different
-            thread_id = cached
-            if auto_topic and auto_topic != cached:
-                _t = _aio.create_task(_close_topic_async(send_bot, send_chat, auto_topic))
-                _t.add_done_callback(
-                    lambda t: logger.warning("close auto-topic raised: %s", t.exception())
-                    if not t.cancelled() and t.exception() else None
-                )
-        else:
-            # Try to create a fresh named topic
-            try:
-                t = await send_bot.create_forum_topic(chat_id=send_chat, name=topic_name)
-                thread_id = t.message_thread_id
-                _admin_topics[topic_key] = thread_id
-                _persist_business_state()
-                logger.info("Created %s topic chat=%d id=%d", topic_name, send_chat, thread_id)
-                # Close the auto-created URL topic now that we have a proper one
-                if auto_topic and auto_topic != thread_id:
+        if topic_key not in _media_topic_locks:
+            _media_topic_locks[topic_key] = _aio.Lock()
+        async with _media_topic_locks[topic_key]:
+            cached = _admin_topics.get(topic_key)
+
+            if cached is not None:
+                # Re-use existing platform topic; close the auto-created URL topic if different
+                thread_id = cached
+                if auto_topic and auto_topic != cached:
                     _t = _aio.create_task(_close_topic_async(send_bot, send_chat, auto_topic))
                     _t.add_done_callback(
                         lambda t: logger.warning("close auto-topic raised: %s", t.exception())
                         if not t.cancelled() and t.exception() else None
                     )
-            except Exception as te:
-                # create_forum_topic not supported here — rename the auto-created topic instead
-                logger.warning("create %s topic failed: %s — using rename fallback", topic_name, te)
-                if auto_topic:
-                    thread_id = auto_topic
+            else:
+                # Try to create a fresh named topic
+                try:
+                    t = await send_bot.create_forum_topic(chat_id=send_chat, name=topic_name)
+                    thread_id = t.message_thread_id
                     _admin_topics[topic_key] = thread_id
                     _persist_business_state()
-                    _t = _aio.create_task(_rename_topic_async(send_bot, send_chat, thread_id, topic_name))
-                    _t.add_done_callback(
-                        lambda t: logger.warning("rename fallback raised: %s", t.exception())
-                        if not t.cancelled() and t.exception() else None
-                    )
-                else:
-                    send_chat = message.chat.id
-                    thread_id = None
+                    logger.info("Created %s topic chat=%d id=%d", topic_name, send_chat, thread_id)
+                    # Close the auto-created URL topic now that we have a proper one
+                    if auto_topic and auto_topic != thread_id:
+                        _t = _aio.create_task(_close_topic_async(send_bot, send_chat, auto_topic))
+                        _t.add_done_callback(
+                            lambda t: logger.warning("close auto-topic raised: %s", t.exception())
+                            if not t.cancelled() and t.exception() else None
+                        )
+                except Exception as te:
+                    # create_forum_topic not supported here — rename the auto-created topic instead
+                    logger.warning("create %s topic failed: %s — using rename fallback", topic_name, te)
+                    if auto_topic:
+                        thread_id = auto_topic
+                        _admin_topics[topic_key] = thread_id
+                        _persist_business_state()
+                        _t = _aio.create_task(_rename_topic_async(send_bot, send_chat, thread_id, topic_name))
+                        _t.add_done_callback(
+                            lambda t: logger.warning("rename fallback raised: %s", t.exception())
+                            if not t.cancelled() and t.exception() else None
+                        )
+                    else:
+                        send_chat = message.chat.id
+                        thread_id = None
     else:
         thread_id = None
 
