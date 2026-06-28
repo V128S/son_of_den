@@ -58,9 +58,10 @@ class MediaFile:
 class InstagramDownloader:
     """Downloads Instagram media to a temporary directory using yt-dlp."""
 
-    def __init__(self, timeout: float = 60.0, cookies_browser: str = "") -> None:
+    def __init__(self, timeout: float = 60.0, cookies_browser: str = "", cookies_file: str = "") -> None:
         self.timeout = timeout
         self.cookies_browser = cookies_browser
+        self.cookies_file = cookies_file
 
     # ------------------------------------------------------------------
     # Public async API
@@ -127,7 +128,9 @@ class InstagramDownloader:
             "sleep_interval": 1,
             "max_sleep_interval": 3,
         }
-        if self.cookies_browser:
+        if self.cookies_file:
+            ydl_opts["cookiefile"] = self.cookies_file
+        elif self.cookies_browser:
             # (browser_name, profile, keyring, container)
             ydl_opts["cookiesfrombrowser"] = (self.cookies_browser, None, None, None)
 

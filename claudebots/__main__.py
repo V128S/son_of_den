@@ -324,11 +324,17 @@ async def amain() -> None:
         logger.info("Meters client disabled (GOOGLE_SERVICE_ACCOUNT_FILE or METERS_SHEET_ID not set)")
 
     # Instagram downloader (always available — uses yt-dlp, no credentials needed for public posts)
-    insta_downloader = InstagramDownloader(timeout=90.0, cookies_browser=settings.ig_cookies_browser)
-    if settings.ig_cookies_browser:
+    insta_downloader = InstagramDownloader(
+        timeout=90.0,
+        cookies_browser=settings.ig_cookies_browser,
+        cookies_file=settings.ig_cookies_file,
+    )
+    if settings.ig_cookies_file:
+        logger.info("Instagram downloader enabled (posts, reels, stories via cookies file %s)", settings.ig_cookies_file)
+    elif settings.ig_cookies_browser:
         logger.info("Instagram downloader enabled (posts, reels, stories via %s cookies)", settings.ig_cookies_browser)
     else:
-        logger.info("Instagram downloader enabled (public posts and reels only; set IG_COOKIES_BROWSER for stories)")
+        logger.info("Instagram downloader enabled (public posts and reels only; set IG_COOKIES_FILE for stories)")
 
     # YouTube audio downloader (always available — uses yt-dlp, no credentials needed for public videos)
     yt_downloader = YTDownloader(timeout=120.0)
