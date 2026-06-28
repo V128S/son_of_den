@@ -130,7 +130,7 @@ def init_business_state(path: Path, data: dict) -> None:
                     _cid = int(_key.rsplit(":", 1)[1])
                     if _cid < 0:  # supergroup IDs are negative
                         _admin_supergroup_id = _cid
-                        logger.info("Recovered admin supergroup_id=%d from topic key %r", _cid, _key)
+                        logger.info("Recovered admin supergroup_id=%d from key %r", _cid, _key)
                         break
                 except (ValueError, IndexError):
                     pass
@@ -1224,15 +1224,8 @@ async def _prepare_media_send(
     """
     chat_type = getattr(message.chat, "type", None)
 
-    send_chat: int = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
-    is_supergroup = (
-        send_chat is not None
-        and (
-            (chat_type == "supergroup" and send_chat == message.chat.id)
-            or (_admin_supergroup_id is not None and send_chat == _admin_supergroup_id)
-            or (panel_chat_id is not None and send_chat == panel_chat_id)
-        )
-    )
+    send_chat: int = message.chat.id
+    is_supergroup = chat_type == "supergroup"
     send_bot: Bot = panel_bot if (send_chat == panel_chat_id and panel_bot is not None) else bot
     thread_id: int | None = message.message_thread_id
 
@@ -1466,7 +1459,7 @@ async def handle_private_message(
     if is_owner_mode and insta_downloader is not None:
         _insta_url = _detect_insta_url(text)
         if _insta_url:
-            _insta_send_chat = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
+            _insta_send_chat = message.chat.id
             _insta_key = f"📸 Instagram:{_insta_send_chat}"
             _insta_send_chat, _insta_thread_id, _wait_msg, _insta_bot = await _prepare_media_send(
                 message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
@@ -1611,7 +1604,7 @@ async def handle_private_message(
     if is_owner_mode and yt_downloader is not None:
         _yt_url = _detect_yt_url(text)
         if _yt_url:
-            _yt_send_chat = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
+            _yt_send_chat = message.chat.id
             _yt_key = f"🎵 YouTube:{_yt_send_chat}"
             _yt_send_chat, _yt_thread_id, _yt_wait_msg, _yt_bot = await _prepare_media_send(
                 message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
@@ -1682,7 +1675,7 @@ async def handle_private_message(
         _social = _detect_social_platform(text)
         if _social:
             _social_url, _social_topic_name = _social
-            _social_send_chat = message.chat.id if chat_type == "supergroup" else (_admin_supergroup_id or message.chat.id)
+            _social_send_chat = message.chat.id
             _social_key = f"{_social_topic_name}:{_social_send_chat}"
             _social_send_chat, _social_thread_id, _social_wait_msg, _social_bot = await _prepare_media_send(
                 message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
