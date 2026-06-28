@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
 from aiogram import Dispatcher
 from aiogram.types import ErrorEvent
@@ -83,6 +84,28 @@ async def _daily_usage_resetter(ai_registry) -> None:
 
     async for _ in daily_at("00:00", ZoneInfo("UTC"), label="Daily usage reset", log=logger):
         ai_registry.reset_daily_usage()
+
+
+async def _periodic_state_saver(
+    state_path: Path,
+    conv: ConversationStore,
+    ai_registry: AIRegistry,
+    interval_seconds: int = 300,
+) -> None:
+    """Save conversations and usage counters every N seconds. Guards against crash data loss."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            _state.update(
+                state_path,
+                {
+                    "conversations": conv.snapshot(),
+                    "usage": ai_registry.snapshot_usage(),
+                },
+            )
+            logger.debug("Periodic state saved to %s", state_path)
+        except Exception as exc:
+            logger.warning("Periodic state save failed: %s", exc)
 
 
 async def _followup_monitor(business_bot, followup_days: int) -> None:
@@ -473,6 +496,12 @@ async def amain() -> None:
     ai_registry.reset_daily_usage()  # initialise baseline for the current boot
     daily_reset_task = asyncio.create_task(_daily_usage_resetter(ai_registry))
 
+    # Periodic state save — protects against crash data loss (every 5 min)
+    periodic_save_task = asyncio.create_task(
+        _periodic_state_saver(settings.state_file, conv, ai_registry)
+    )
+    logger.info("Periodic state saver started (interval=300s)")
+
     # Start daily contact digest scheduler
     digest_task: asyncio.Task[None] | None = None
     if settings.contact_digest_time:
@@ -616,6 +645,11 @@ async def amain() -> None:
         daily_reset_task.cancel()
         try:
             await daily_reset_task
+        except asyncio.CancelledError:
+            pass
+        periodic_save_task.cancel()
+        try:
+            await periodic_save_task
         except asyncio.CancelledError:
             pass
         if revival_task is not None:
