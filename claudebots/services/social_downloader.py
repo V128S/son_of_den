@@ -136,7 +136,14 @@ class SocialDownloader:
         tmpdir = tempfile.mkdtemp(prefix="social_")
         ydl_opts: dict = {
             "outtmpl": os.path.join(tmpdir, "%(autonumber)s_%(id)s.%(ext)s"),
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            # Cap at 720p so files stay under Telegram's 50 MB Bot API limit.
+            # Twitter/X can serve 4K at 100+ MB which times out and can't be uploaded.
+            "format": (
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]"
+                "/best[height<=720][ext=mp4]"
+                "/best[height<=720]"
+                "/best[ext=mp4]/best"
+            ),
             "merge_output_format": "mp4",
             "quiet": True,
             "no_warnings": True,
@@ -175,6 +182,12 @@ class SocialDownloader:
 
             if downloaded.suffix.lower() in (".mp4", ".mov", ".m4v", ".webm", ".mkv"):
                 downloaded = InstagramDownloader._reencode_for_telegram(downloaded)
+
+            # Skip files over Telegram's 50 MB Bot API upload limit
+            if downloaded.stat().st_size > 49 * 1024 * 1024:
+                logger.warning("Skipping %s — %d MB exceeds Telegram upload limit", downloaded.name, downloaded.stat().st_size // 1024 // 1024)
+                downloaded.unlink(missing_ok=True)
+                continue
 
             ftype = InstagramDownloader._classify(downloaded, ext)
             caption = (entry.get("title") or entry.get("description") or "")[:200]

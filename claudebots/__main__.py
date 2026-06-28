@@ -342,7 +342,7 @@ async def amain() -> None:
 
     # TikTok / X/Twitter / Threads downloader (uses yt-dlp; Threads requires browser cookies)
     social_downloader = SocialDownloader(
-        timeout=90.0,
+        timeout=180.0,
         cookies_browser=settings.ig_cookies_browser,
         cookies_file=settings.ig_cookies_file,
     )
