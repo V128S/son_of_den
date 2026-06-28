@@ -185,13 +185,10 @@ class InstagramDownloader:
             "ffmpeg", "-y",
             "-i", str(src_path),
             # Bake SAR into pixel dimensions so Telegram displays correctly.
-            # trunc(iw*sar/2)*2 → display width rounded down to even number.
-            # Without this, anamorphic Instagram videos appear squished.
-            # Round dimensions to even (H.264 requirement) and fix SAR to 1:1.
-            # Do NOT apply iw*sar scaling — Instagram uses square pixels (SAR=1:1);
-            # a broken/undefined SAR in the container would make iw*sar go to 0
-            # and squish the video. We keep raw pixel dimensions intact.
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1",
+            # If SAR > 0 (defined), apply it: display_width = iw * sar, rounded to even.
+            # If SAR = 0 (undefined/broken), keep raw pixel dimensions unchanged.
+            # setsar=1 clears the container SAR so players don't double-apply it.
+            "-vf", "scale=if(gt(sar\\,0)\\,trunc(iw*sar/2)*2\\,trunc(iw/2)*2):trunc(ih/2)*2,setsar=1",
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "23",

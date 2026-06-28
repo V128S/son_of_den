@@ -1232,9 +1232,14 @@ async def _prepare_media_send(
     chat_type = getattr(message.chat, "type", None)
 
     send_chat: int = message.chat.id
-    # Treat as a forum chat when it's a supergroup OR when the incoming message already
-    # carries a non-zero thread_id (private DM with Telegram Topics / Business Topics).
-    is_supergroup = chat_type == "supergroup" or bool(message.message_thread_id)
+    # Treat as a forum chat when it's a supergroup, when the incoming message carries a
+    # non-zero thread_id (Telegram Topics in DM / Business Topics), OR when we already
+    # have a named topic for this platform in this chat (message from General, thread=0).
+    is_supergroup = (
+        chat_type == "supergroup"
+        or bool(message.message_thread_id)
+        or topic_key in _admin_topics
+    )
     send_bot: Bot = panel_bot if (send_chat == panel_chat_id and panel_bot is not None) else bot
     thread_id: int | None = message.message_thread_id
 
