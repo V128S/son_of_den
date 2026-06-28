@@ -82,6 +82,10 @@ _contact_last_msg_ts: dict[int, float] = {}
 # Timestamp of last summary sent per contact — prevents duplicate summaries
 _contact_summary_sent: dict[int, float] = {}
 
+_SUMMARY_SILENCE_SECONDS: float = 25 * 60   # 25 minutes of silence → summarize
+_SUMMARY_CHECK_INTERVAL: float = 5 * 60     # check every 5 minutes
+_SUMMARY_MIN_EXCHANGES: int = 2              # minimum messages to bother summarizing
+
 # Expense detection: keyword + amount pattern
 _EXPENSE_KW_RE = _re.compile(
     r"\b(потратил|заплатил|купил|стоит|обошлось|расход|трата|уплатил)\b",
@@ -932,6 +936,97 @@ async def _extract_calendar_event(
     except Exception as e:
         logger.debug("_extract_calendar_event: %s", e)
         return None
+
+
+async def _run_summary_check(
+    *,
+    bot: Bot,
+    admin_user_id: int,
+    ai_registry: AIRegistry,
+    obsidian_client: "ObsidianClient | None" = None,
+) -> None:
+    """Check all contacts for silence and send summary if conditions are met.
+
+    Extracted from the loop for testability.
+    """
+    now = time.time()
+    to_summarize: list[int] = []
+
+    for user_id, last_ts in list(_contact_last_msg_ts.items()):
+        if now - last_ts < _SUMMARY_SILENCE_SECONDS:
+            continue
+        last_summary = _contact_summary_sent.get(user_id, 0.0)
+        if last_summary > last_ts:
+            continue  # already summarized this session
+        contact = _contact_data.get(user_id)
+        if not contact:
+            continue
+        if len(contact.get("messages", [])) < _SUMMARY_MIN_EXCHANGES:
+            continue
+        to_summarize.append(user_id)
+
+    for user_id in to_summarize:
+        contact = _contact_data[user_id]
+        user_name: str = contact["name"]
+        messages: list[dict] = contact.get("messages", [])
+        try:
+            client = ai_registry.get_client("openrouter_gemini")
+            history = "\n".join(
+                f"{'Контакт' if m.get('role') == 'contact' else 'Бот'} [{m.get('time', '')}]: {m.get('text', '')}"
+                for m in messages[-20:]
+            )
+            prompt = (
+                f"Сделай краткую сводку переписки с {user_name}.\n"
+                f"Переписка:\n{history}\n\n"
+                "Ответь строго в формате:\n"
+                "• Суть запроса: ...\n"
+                "• Что просил передать: ...\n"
+                "• Срочность: срочно / не срочно\n"
+                "• Тон: ..."
+            )
+            summary = await client.complete(
+                system="Кратко резюмируй переписку. Только факты, 4 строки.",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=150,
+            )
+            topic_id = _contact_topics.get(user_id)
+            await bot.send_message(
+                admin_user_id,
+                f"📋 Итог разговора с {user_name}:\n{summary}",
+                message_thread_id=topic_id,
+            )
+            _contact_summary_sent[user_id] = now
+
+            if obsidian_client is not None:
+                existing = obsidian_client.read_contact_context(user_name) or ""
+                date_str = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
+                new_entry = f"[{date_str}] {summary}"
+                combined = f"{existing}\n{new_entry}".strip() if existing else new_entry
+                # Keep context under 800 chars to avoid bloat
+                if len(combined) > 800:
+                    combined = combined[-800:]
+                obsidian_client.write_contact_context(user_name, user_id, combined)
+
+        except Exception as e:
+            logger.warning("Conversation summary for %s failed: %s", user_name, e)
+
+
+async def start_conversation_summary_checker(
+    *,
+    bot: Bot,
+    admin_user_id: int,
+    ai_registry: AIRegistry,
+    obsidian_client: "ObsidianClient | None" = None,
+) -> None:
+    """Background task: check every 5 min for silent conversations and summarize them."""
+    while True:
+        await asyncio.sleep(_SUMMARY_CHECK_INTERVAL)
+        await _run_summary_check(
+            bot=bot,
+            admin_user_id=admin_user_id,
+            ai_registry=ai_registry,
+            obsidian_client=obsidian_client,
+        )
 
 
 async def handle_business_message(

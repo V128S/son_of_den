@@ -576,6 +576,18 @@ async def amain() -> None:
     else:
         logger.info("Budget monitor disabled (DAILY_COST_ALERT_USD not set or 0)")
 
+    # Auto-summary: summarize contact conversations after 25 min silence
+    from claudebots.routers.business import start_conversation_summary_checker
+    summary_task = asyncio.create_task(
+        start_conversation_summary_checker(
+            bot=bots["business"],
+            admin_user_id=settings.admin_user_id,
+            ai_registry=ai_registry,
+            obsidian_client=obsidian_client,
+        )
+    )
+    logger.info("Conversation auto-summary checker started")
+
     # Follow-up reminders for silent contacts
     followup_task: asyncio.Task[None] | None = None
     if settings.contact_followup_days > 0:
@@ -654,6 +666,11 @@ async def amain() -> None:
                 await followup_task
             except asyncio.CancelledError:
                 pass
+        summary_task.cancel()
+        try:
+            await summary_task
+        except asyncio.CancelledError:
+            pass
         if feed_digest_task is not None:
             feed_digest_task.cancel()
             try:

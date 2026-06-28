@@ -454,3 +454,154 @@ async def test_note_command_appends_to_existing_context(alerts_mock):
     written_context = obsidian.write_contact_context.call_args[0][2]
     assert "Старая заметка" in written_context
     assert "Новая заметка" in written_context
+
+
+# ---------------------------------------------------------------------------
+# Auto-summary checker
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+
+async def test_summary_checker_sends_summary_after_silence(
+    conv, ai_registry_mock, bot_mocks, alerts_mock
+):
+    """After 25+ min silence with 2+ messages, summary is sent to admin."""
+    _clear_biz_state()
+    biz_mod._contact_last_msg_ts.clear()
+    biz_mod._contact_summary_sent.clear()
+
+    # Set up contact with 2 messages and a topic
+    biz_mod._contact_data[42] = {
+        "name": "Иван",
+        "messages": [
+            {"role": "contact", "text": "Хочу узнать цены", "time": "10:00"},
+            {"role": "assistant", "text": "Конечно, расскажу", "time": "10:01"},
+        ],
+    }
+    biz_mod._contact_topics[42] = 99
+    # Last message was 26 minutes ago
+    biz_mod._contact_last_msg_ts[42] = _time.time() - 26 * 60
+
+    ai_registry_mock.get_client("openrouter_gemini").complete = AsyncMock(
+        return_value="• Суть: хочет цены\n• Что передать: уточнить цену\n• Срочность: не срочно\n• Тон: вежливый"
+    )
+
+    bot = bot_mocks["business"]
+    bot.send_message = AsyncMock()
+
+    await biz_mod._run_summary_check(
+        bot=bot,
+        admin_user_id=1000,
+        ai_registry=ai_registry_mock,
+        obsidian_client=None,
+    )
+
+    bot.send_message.assert_awaited_once()
+    call_kwargs = bot.send_message.call_args[1] if bot.send_message.call_args[1] else {}
+    call_args = bot.send_message.call_args[0] if bot.send_message.call_args[0] else []
+    sent_text = call_args[1] if len(call_args) > 1 else call_kwargs.get("text", "")
+    assert "Иван" in sent_text
+    assert biz_mod._contact_summary_sent[42] > 0
+
+
+async def test_summary_checker_skips_recent_contacts(
+    conv, ai_registry_mock, bot_mocks, alerts_mock
+):
+    """Contacts with recent messages are not summarized."""
+    _clear_biz_state()
+    biz_mod._contact_last_msg_ts.clear()
+    biz_mod._contact_summary_sent.clear()
+
+    biz_mod._contact_data[42] = {
+        "name": "Иван",
+        "messages": [{"role": "contact", "text": "Привет", "time": "10:00"}],
+    }
+    biz_mod._contact_last_msg_ts[42] = _time.time() - 5 * 60  # 5 min ago
+
+    bot = bot_mocks["business"]
+    bot.send_message = AsyncMock()
+
+    await biz_mod._run_summary_check(
+        bot=bot,
+        admin_user_id=1000,
+        ai_registry=ai_registry_mock,
+        obsidian_client=None,
+    )
+
+    bot.send_message.assert_not_awaited()
+
+
+async def test_summary_checker_skips_already_summarized(
+    conv, ai_registry_mock, bot_mocks, alerts_mock
+):
+    """Contacts already summarized in this session are skipped."""
+    _clear_biz_state()
+    biz_mod._contact_last_msg_ts.clear()
+    biz_mod._contact_summary_sent.clear()
+
+    biz_mod._contact_data[42] = {
+        "name": "Иван",
+        "messages": [
+            {"role": "contact", "text": "Привет", "time": "10:00"},
+            {"role": "assistant", "text": "Привет!", "time": "10:01"},
+        ],
+    }
+    last_ts = _time.time() - 30 * 60
+    biz_mod._contact_last_msg_ts[42] = last_ts
+    # Summary was sent AFTER the last message
+    biz_mod._contact_summary_sent[42] = _time.time()
+
+    bot = bot_mocks["business"]
+    bot.send_message = AsyncMock()
+
+    await biz_mod._run_summary_check(
+        bot=bot,
+        admin_user_id=1000,
+        ai_registry=ai_registry_mock,
+        obsidian_client=None,
+    )
+
+    bot.send_message.assert_not_awaited()
+
+
+async def test_summary_checker_writes_obsidian_context(
+    conv, ai_registry_mock, bot_mocks, alerts_mock
+):
+    """After sending summary, context is written/updated in Obsidian."""
+    _clear_biz_state()
+    biz_mod._contact_last_msg_ts.clear()
+    biz_mod._contact_summary_sent.clear()
+    from unittest.mock import MagicMock
+
+    biz_mod._contact_data[42] = {
+        "name": "Иван",
+        "messages": [
+            {"role": "contact", "text": "Хочу заказ", "time": "10:00"},
+            {"role": "assistant", "text": "Окей", "time": "10:01"},
+        ],
+    }
+    biz_mod._contact_topics[42] = 99
+    biz_mod._contact_last_msg_ts[42] = _time.time() - 30 * 60
+
+    ai_registry_mock.get_client("openrouter_gemini").complete = AsyncMock(
+        return_value="• Суть: хочет заказать\n• Что передать: позвонить\n• Срочность: срочно\n• Тон: вежливый"
+    )
+
+    obsidian = MagicMock()
+    obsidian.read_contact_context.return_value = None
+    obsidian.write_contact_context = MagicMock()
+
+    bot = bot_mocks["business"]
+    bot.send_message = AsyncMock()
+
+    await biz_mod._run_summary_check(
+        bot=bot,
+        admin_user_id=1000,
+        ai_registry=ai_registry_mock,
+        obsidian_client=obsidian,
+    )
+
+    obsidian.write_contact_context.assert_called_once()
+    written = obsidian.write_contact_context.call_args[0][2]
+    assert "хочет заказать" in written or "Суть" in written
