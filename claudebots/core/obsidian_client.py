@@ -159,3 +159,64 @@ class ObsidianClient:
         if not daily_file.exists():
             self._append(daily_file, f"# Дневник контактов — {date_display}\n\n")
         self._append(daily_file, f"**{safe_name}** {note}")
+
+    def read_contact_context(self, contact_name: str) -> str | None:
+        """Read the ## Контекст section from a contact's note. Returns None if absent."""
+        safe_name = _safe_filename(contact_name)
+        contact_file = self.vault_path / "Contacts" / f"{safe_name}.md"
+        if not contact_file.exists():
+            return None
+        content = contact_file.read_text(encoding="utf-8")
+        match = re.search(r"## Контекст\n(.*?)(?=\n##|\Z)", content, re.DOTALL)
+        if not match:
+            return None
+        text = match.group(1).strip()
+        return text or None
+
+    def write_contact_context(
+        self, contact_name: str, contact_id: int, context_text: str
+    ) -> None:
+        """Write/replace the ## Контекст section in a contact's note.
+
+        Preserves all other content (header, log lines). Creates the file if missing.
+        """
+        safe_name = _safe_filename(contact_name)
+        contact_file = self.vault_path / "Contacts" / f"{safe_name}.md"
+        context_block = f"## Контекст\n{context_text}\n"
+
+        if contact_file.exists():
+            content = contact_file.read_text(encoding="utf-8")
+            if "## Контекст" in content:
+                # Replace the existing section (everything up to next ## or end-of-file)
+                content = re.sub(
+                    r"## Контекст\n.*?(?=\n##|\Z)",
+                    context_block,
+                    content,
+                    flags=re.DOTALL,
+                )
+            else:
+                # Insert the section after the --- separator (before log lines)
+                if "---\n" in content:
+                    head, tail = content.split("---\n", 1)
+                    content = f"{head}---\n\n{context_block}\n{tail}"
+                else:
+                    content = content + f"\n{context_block}"
+            try:
+                contact_file.write_text(content, encoding="utf-8")
+            except Exception as e:
+                logger.warning("Obsidian write_contact_context failed (%s): %s", contact_file, e)
+        else:
+            now = self._now()
+            date_display = now.strftime("%d.%m.%Y")
+            header = (
+                f"# {contact_name}\n"
+                f"- **ID:** {contact_id}\n"
+                f"- **Первый контакт:** {date_display}\n\n"
+                f"---\n\n"
+                f"{context_block}\n"
+            )
+            try:
+                contact_file.parent.mkdir(parents=True, exist_ok=True)
+                contact_file.write_text(header, encoding="utf-8")
+            except Exception as e:
+                logger.warning("Obsidian write_contact_context failed (%s): %s", contact_file, e)
