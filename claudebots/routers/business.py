@@ -1192,14 +1192,21 @@ async def _rename_topic_async(bot: Bot, chat_id: int, thread_id: int, name: str)
 
 
 async def _close_topic_async(bot: Bot, chat_id: int, thread_id: int) -> None:
-    """Close a question-text topic that has been superseded by an existing category."""
+    """Delete or close a superseded auto-created topic."""
     import asyncio as _aio
     await _aio.sleep(0.5)
+    # Try delete first (removes the topic entirely); fall back to close (archives it).
+    try:
+        await bot.delete_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+        logger.info("Deleted superseded topic %d in chat %d", thread_id, chat_id)
+        return
+    except Exception:
+        pass
     try:
         await bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
-        logger.info("Closed superseded topic %d", thread_id)
+        logger.info("Closed superseded topic %d in chat %d", thread_id, chat_id)
     except Exception as e:
-        logger.debug("close_forum_topic %d: %s", thread_id, e)
+        logger.debug("close/delete topic %d failed: %s", thread_id, e)
 
 
 async def _prepare_media_send(
