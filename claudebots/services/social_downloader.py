@@ -182,12 +182,15 @@ class SocialDownloader:
 
             if downloaded.suffix.lower() in (".mp4", ".mov", ".m4v", ".webm", ".mkv"):
                 downloaded = InstagramDownloader._reencode_for_telegram(downloaded)
-
-            # Skip files over Telegram's 50 MB Bot API upload limit
-            if downloaded.stat().st_size > 49 * 1024 * 1024:
-                logger.warning("Skipping %s — %d MB exceeds Telegram upload limit", downloaded.name, downloaded.stat().st_size // 1024 // 1024)
-                downloaded.unlink(missing_ok=True)
-                continue
+                # If still over Telegram's 50 MB limit, re-encode with target bitrate
+                if downloaded.stat().st_size > InstagramDownloader._TG_MAX_BYTES:
+                    logger.warning("File %d MB > 49 MB — re-encoding with size target", downloaded.stat().st_size // 1024 // 1024)
+                    downloaded = InstagramDownloader._reencode_for_telegram(downloaded, target_bytes=InstagramDownloader._TG_MAX_BYTES)
+                # If still too large after targeted re-encode, skip
+                if downloaded.stat().st_size > InstagramDownloader._TG_MAX_BYTES:
+                    logger.warning("Skipping %s — still %d MB after re-encode", downloaded.name, downloaded.stat().st_size // 1024 // 1024)
+                    downloaded.unlink(missing_ok=True)
+                    continue
 
             ftype = InstagramDownloader._classify(downloaded, ext)
             caption = (entry.get("title") or entry.get("description") or "")[:200]

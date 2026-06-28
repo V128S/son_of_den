@@ -169,10 +169,26 @@ class InstagramDownloader:
 
         return result
 
+    _TG_MAX_BYTES: int = 49 * 1024 * 1024  # 49 MB — Bot API hard limit is 50 MB
+
     @staticmethod
-    def _reencode_for_telegram(src_path: Path) -> Path:
+    def _video_duration(src_path: Path) -> float | None:
+        """Return video duration in seconds via ffprobe, or None on failure."""
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", str(src_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            return float(r.stdout.strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _reencode_for_telegram(src_path: Path, target_bytes: int | None = None) -> Path:
         """Re-encode video to H.264/AAC with faststart moov atom for Telegram playback.
 
+        When target_bytes is set, uses two-pass bitrate control to hit that size.
         Returns the re-encoded path (replaces the original). Falls back to the
         original file if ffmpeg is unavailable or encoding fails.
         """
@@ -181,22 +197,39 @@ class InstagramDownloader:
             return src_path
 
         dst_path = src_path.with_name(src_path.stem + "_tg.mp4")
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(src_path),
-            # Bake SAR into pixel dimensions so Telegram displays correctly.
-            # If SAR > 0 (defined), apply it: display_width = iw * sar, rounded to even.
-            # If SAR = 0 (undefined/broken), keep raw pixel dimensions unchanged.
-            # setsar=1 clears the container SAR so players don't double-apply it.
-            "-vf", "scale=if(gt(sar\\,0)\\,trunc(iw*sar/2)*2\\,trunc(iw/2)*2):trunc(ih/2)*2,setsar=1",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            str(dst_path),
-        ]
+        vf = "scale=if(gt(sar\\,0)\\,trunc(iw*sar/2)*2\\,trunc(iw/2)*2):trunc(ih/2)*2,setsar=1"
+
+        if target_bytes is not None:
+            duration = InstagramDownloader._video_duration(src_path)
+            if duration and duration > 0:
+                # Reserve 128 kbps for audio; rest goes to video
+                audio_kbps = 128
+                total_kbps = int((target_bytes * 8) / (duration * 1024))
+                video_kbps = max(200, total_kbps - audio_kbps)
+                cmd = [
+                    "ffmpeg", "-y", "-i", str(src_path),
+                    "-vf", vf,
+                    "-c:v", "libx264", "-preset", "fast", "-b:v", f"{video_kbps}k",
+                    "-c:a", "aac", "-b:a", f"{audio_kbps}k",
+                    "-movflags", "+faststart", str(dst_path),
+                ]
+                logger.debug("Size-targeted re-encode: %.1f MB → target %d kbps video", src_path.stat().st_size / 1024 / 1024, video_kbps)
+            else:
+                target_bytes = None  # fallback to CRF below
+
+        if target_bytes is None:
+            cmd = [
+                "ffmpeg", "-y", "-i", str(src_path),
+                # Bake SAR into pixel dimensions so Telegram displays correctly.
+                # If SAR > 0 (defined), apply it: display_width = iw * sar, rounded to even.
+                # If SAR = 0 (undefined/broken), keep raw pixel dimensions unchanged.
+                # setsar=1 clears the container SAR so players don't double-apply it.
+                "-vf", vf,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart", str(dst_path),
+            ]
+
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=300)
             src_path.unlink(missing_ok=True)
