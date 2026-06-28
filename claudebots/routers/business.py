@@ -1549,36 +1549,12 @@ async def handle_private_message(
                             _group.append(InputMediaVideo(media=_inp, caption=_cap))
                     await _insta_bot.send_media_group(_insta_send_chat, _group, message_thread_id=_insta_thread_id)
 
-                if chat_type == "private" and _insta_send_chat != message.chat.id:
-                    try:
-                        await bot.send_message(chat_id=message.chat.id, text="✅ Скачал и отправил в топик 📸 Instagram", parse_mode=None)
-                    except Exception as _pe:
-                        logger.debug("Instagram DM confirmation failed: %s", _pe)
-
-                if chat_type == "supergroup" and message.message_thread_id:
-                    if (
-                        _insta_thread_id is not None
-                        and message.message_thread_id != _insta_thread_id
-                        and message.message_thread_id not in _admin_topics.values()
-                        and message.message_thread_id not in _topic_contacts
-                    ):
-                        import asyncio as _aio
-                        _t = _aio.create_task(_close_topic_async(bot, message.chat.id, message.message_thread_id))
-                        _t.add_done_callback(
-                            lambda t: logger.warning("close_topic for Instagram raised: %s", t.exception())
-                            if not t.cancelled() and t.exception() else None
-                        )
             except Exception as _e:
                 logger.warning("Instagram send failed: %s", _e)
                 await _insta_bot.send_message(
                     chat_id=_insta_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
                     message_thread_id=_insta_thread_id, parse_mode=None,
                 )
-                if chat_type == "private" and _insta_send_chat != message.chat.id:
-                    try:
-                        await bot.send_message(chat_id=message.chat.id, text=f"⚠️ Не удалось отправить в топик: {_e}", parse_mode=None)
-                    except Exception:
-                        pass
             finally:
                 insta_downloader.cleanup(_media_files)
             return
@@ -1678,12 +1654,6 @@ async def handle_private_message(
                         caption=_yt_caption, message_thread_id=_yt_thread_id, parse_mode=None,
                     )
 
-                if chat_type == "private" and _yt_send_chat != message.chat.id:
-                    try:
-                        await bot.send_message(chat_id=message.chat.id, text="✅ Аудио скачано и отправлено в топик 🎵 YouTube", parse_mode=None)
-                    except Exception as _pe:
-                        logger.debug("YouTube DM confirmation failed: %s", _pe)
-
             except Exception as _e:
                 logger.warning("YouTube send failed: %s", _e)
                 try:
@@ -1699,11 +1669,6 @@ async def handle_private_message(
                         )
                 except Exception:
                     pass
-                if chat_type == "private" and _yt_send_chat != message.chat.id:
-                    try:
-                        await bot.send_message(chat_id=message.chat.id, text=f"⚠️ Не удалось скачать аудио: {_e}", parse_mode=None)
-                    except Exception:
-                        pass
             finally:
                 yt_downloader.cleanup(_yt_audio)
             return
@@ -1765,22 +1730,12 @@ async def handle_private_message(
                             _sgroup.append(InputMediaVideo(media=_si, caption=_sc))
                     await _social_bot.send_media_group(_social_send_chat, _sgroup, message_thread_id=_social_thread_id)
 
-                if chat_type == "private" and _social_send_chat != message.chat.id:
-                    try:
-                        await bot.send_message(chat_id=message.chat.id, text=f"✅ Скачал и отправил в топик {_social_topic_name}", parse_mode=None)
-                    except Exception as _pe:
-                        logger.debug("Social DM confirmation failed: %s", _pe)
             except Exception as _e:
                 logger.warning("Social send failed: %s", _e)
                 await _social_bot.send_message(
                     chat_id=_social_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
                     message_thread_id=_social_thread_id, parse_mode=None,
                 )
-                if chat_type == "private" and _social_send_chat != message.chat.id:
-                    try:
-                        await bot.send_message(chat_id=message.chat.id, text=f"⚠️ Не удалось отправить в топик: {_e}", parse_mode=None)
-                    except Exception:
-                        pass
             finally:
                 social_downloader.cleanup(_social_files)
             return
