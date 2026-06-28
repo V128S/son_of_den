@@ -121,6 +121,20 @@ def init_business_state(path: Path, data: dict) -> None:
     global _admin_supergroup_id
     _admin_supergroup_id = data.get("admin_supergroup_id") or None
 
+    # Recover supergroup_id from topic keys when it's missing (e.g. after state reset).
+    # Media topic keys are stored as "{name}:{chat_id}", e.g. "📸 Instagram:-1003511660064".
+    if _admin_supergroup_id is None:
+        for _key in _admin_topics:
+            if ":" in _key:
+                try:
+                    _cid = int(_key.rsplit(":", 1)[1])
+                    if _cid < 0:  # supergroup IDs are negative
+                        _admin_supergroup_id = _cid
+                        logger.info("Recovered admin supergroup_id=%d from topic key %r", _cid, _key)
+                        break
+                except (ValueError, IndexError):
+                    pass
+
     muted_raw = data.get("muted_contacts", [])
     if isinstance(muted_raw, list):
         _muted_contacts.update(int(x) for x in muted_raw if isinstance(x, (int, str)))
