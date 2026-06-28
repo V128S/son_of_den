@@ -141,5 +141,12 @@ class Settings(BaseSettings):
     # Must be logged into Instagram / Threads in that browser.
     # Supported values: "safari", "chrome", "firefox", "edge", "chromium".
     # Leave empty to disable cookie auth (public posts/reels still work; stories and Threads won't).
+    # NOTE: LaunchAgent background processes may lack TCC access to Safari cookies.
+    # Use ig_cookies_file instead if you see "Operation not permitted" in logs.
     ig_cookies_browser: str = ""
+
+    # Path to a Netscape-format cookies.txt file for Instagram / Threads auth.
+    # Takes precedence over ig_cookies_browser when set.
+    # Export with browser extension "Get cookies.txt LOCALLY" → select threads.net + instagram.com.
+    ig_cookies_file: str = ""
 

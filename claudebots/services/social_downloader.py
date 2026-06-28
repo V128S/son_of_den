@@ -76,9 +76,15 @@ def detect_platform(text: str) -> tuple[str, str] | None:
 class SocialDownloader:
     """Downloads TikTok / X/Twitter / Threads media to a temp directory."""
 
-    def __init__(self, timeout: float = 90.0, cookies_browser: str = "") -> None:
+    def __init__(
+        self,
+        timeout: float = 90.0,
+        cookies_browser: str = "",
+        cookies_file: str = "",
+    ) -> None:
         self.timeout = timeout
         self.cookies_browser = cookies_browser
+        self.cookies_file = cookies_file
         # Reuse InstagramDownloader's re-encode + classify helpers
         self._helper = InstagramDownloader.__new__(InstagramDownloader)
 
@@ -174,27 +180,11 @@ class SocialDownloader:
     # ------------------------------------------------------------------
 
     def _download_threads_sync(self, url: str) -> list[MediaFile]:
-        """Fetch a Threads post page with browser cookies and extract media via OG tags."""
+        """Fetch a Threads post page and extract media from OG tags or __NEXT_DATA__ JSON."""
         import httpx
-        import yt_dlp
 
         tmpdir = tempfile.mkdtemp(prefix="threads_")
-
-        # Build cookie jar from browser via yt-dlp internals
-        cookies: dict[str, str] = {}
-        if self.cookies_browser:
-            try:
-                ydl_opts: dict = {
-                    "quiet": True,
-                    "cookiesfrombrowser": (self.cookies_browser, None, None, None),
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    for cookie in ydl.cookiejar:
-                        domain = getattr(cookie, "domain", "") or ""
-                        if any(d in domain for d in ("threads", "instagram", "facebook")):
-                            cookies[cookie.name] = cookie.value
-            except Exception as e:
-                logger.warning("Threads: failed to extract browser cookies — %s", e)
+        cookies = self._load_cookies()
 
         headers = {
             "User-Agent": _SAFARI_UA,
@@ -214,7 +204,7 @@ class SocialDownloader:
             ) as client:
                 resp = client.get(url)
             if resp.status_code != 200:
-                logger.warning("Threads page returned HTTP %s for %s", resp.status_code, url)
+                logger.warning("Threads page HTTP %s for %s", resp.status_code, url)
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 return []
             page_html = resp.text
@@ -223,14 +213,23 @@ class SocialDownloader:
             shutil.rmtree(tmpdir, ignore_errors=True)
             return []
 
-        # Extract media URLs from OG meta tags (handles both attribute orders)
+        logger.debug("Threads page fetched (%d chars), cookies=%d", len(page_html), len(cookies))
+
+        # Strategy 1: OG meta tags (present when authenticated or for some public posts)
         video_url = _og_content(page_html, "video:url") or _og_content(page_html, "video")
         image_url = _og_content(page_html, "image")
 
+        # Strategy 2: __NEXT_DATA__ JSON blob (Next.js SSR with embedded post data)
+        if not video_url and not image_url:
+            video_url, image_url = _extract_next_data_media(page_html)
+
         if not video_url and not image_url:
             logger.warning(
-                "Threads: no OG media tags found in page (may need cookies or post is private)"
+                "Threads: no media found — cookies loaded=%s. "
+                "Set IG_COOKIES_FILE to a Netscape cookies.txt exported from browser.",
+                bool(cookies),
             )
+            logger.debug("Threads HTML snippet: %s", page_html[:1500])
             shutil.rmtree(tmpdir, ignore_errors=True)
             return []
 
@@ -253,6 +252,44 @@ class SocialDownloader:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
         return result
+
+    def _load_cookies(self) -> dict[str, str]:
+        """Load Meta/Threads cookies from file (preferred) or browser."""
+        cookies: dict[str, str] = {}
+
+        # Cookies file takes precedence — avoids macOS TCC restrictions on browser keychain
+        if self.cookies_file:
+            try:
+                import http.cookiejar
+                jar = http.cookiejar.MozillaCookieJar(self.cookies_file)
+                jar.load(ignore_discard=True, ignore_expires=True)
+                for c in jar:
+                    domain = getattr(c, "domain", "") or ""
+                    if any(d in domain for d in ("threads", "instagram", "facebook")):
+                        cookies[c.name] = c.value
+                logger.debug("Threads: loaded %d cookies from %s", len(cookies), self.cookies_file)
+                return cookies
+            except Exception as e:
+                logger.warning("Threads: failed to load cookies file %s — %s", self.cookies_file, e)
+
+        # Fallback: extract from browser via yt-dlp (may fail if TCC blocks keychain access)
+        if self.cookies_browser:
+            try:
+                import yt_dlp
+                ydl_opts: dict = {
+                    "quiet": True,
+                    "cookiesfrombrowser": (self.cookies_browser, None, None, None),
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    for cookie in ydl.cookiejar:
+                        domain = getattr(cookie, "domain", "") or ""
+                        if any(d in domain for d in ("threads", "instagram", "facebook")):
+                            cookies[cookie.name] = cookie.value
+                logger.debug("Threads: loaded %d cookies from browser", len(cookies))
+            except Exception as e:
+                logger.warning("Threads: browser cookie extraction failed — %s", e)
+
+        return cookies
 
     @staticmethod
     def _fetch_media(
@@ -297,3 +334,46 @@ def _og_content(html: str, prop: str) -> str | None:
         if m:
             return html_module.unescape(m.group(1))
     return None
+
+
+def _extract_next_data_media(html: str) -> tuple[str | None, str | None]:
+    """Extract video_url / image_url from Next.js __NEXT_DATA__ JSON blob."""
+    import json
+
+    m = re.search(
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>([^<]+)</script>',
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return None, None
+
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return None, None
+
+    video_url: str | None = None
+    image_url: str | None = None
+
+    # Recursively walk JSON to find CDN media URLs
+    def _walk(obj: object, depth: int = 0) -> None:
+        nonlocal video_url, image_url
+        if depth > 20:
+            return
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                if isinstance(val, str) and _META_CDN_RE.match(val):
+                    lk = key.lower()
+                    if "video" in lk and not video_url:
+                        video_url = val
+                    elif "image" in lk or "thumbnail" in lk or "cover" in lk:
+                        if not image_url:
+                            image_url = val
+                _walk(val, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item, depth + 1)
+
+    _walk(data)
+    return video_url, image_url

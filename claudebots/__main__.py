@@ -335,11 +335,20 @@ async def amain() -> None:
     logger.info("YouTube audio downloader enabled (yt-dlp, public videos only)")
 
     # TikTok / X/Twitter / Threads downloader (uses yt-dlp; Threads requires browser cookies)
-    social_downloader = SocialDownloader(timeout=90.0, cookies_browser=settings.ig_cookies_browser)
-    if settings.ig_cookies_browser:
-        logger.info("Social downloader enabled (TikTok, X/Twitter, Threads via %s cookies)", settings.ig_cookies_browser)
+    social_downloader = SocialDownloader(
+        timeout=90.0,
+        cookies_browser=settings.ig_cookies_browser,
+        cookies_file=settings.ig_cookies_file,
+    )
+    if settings.ig_cookies_file:
+        logger.info("Social downloader enabled (Threads via cookies file %s)", settings.ig_cookies_file)
+    elif settings.ig_cookies_browser:
+        logger.info(
+            "Social downloader enabled (TikTok, X/Twitter, Threads via %s cookies)",
+            settings.ig_cookies_browser,
+        )
     else:
-        logger.info("Social downloader enabled (TikTok, X/Twitter; set IG_COOKIES_BROWSER for Threads)")
+        logger.info("Social downloader enabled (TikTok, X/Twitter; set IG_COOKIES_FILE for Threads)")
 
     # Exa web search (optional — enriches panel discussions with real-world context)
     search_client = SearchClient(
