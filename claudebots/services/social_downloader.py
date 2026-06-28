@@ -45,12 +45,17 @@ _THREADS_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Meta CDN domains that host Threads media
+# Meta CDN domains that host Threads/Instagram media.
+# Matches scontent.fdnk3-2.fna.fbcdn.net, scontent.cdninstagram.com, etc.
+# Uses [\w.-]+ to handle arbitrary subdomain chains before the CDN root.
 _META_CDN_RE = re.compile(
-    r"https://(?:scontent|video|static)\.[a-z0-9-]+\."
-    r"(?:cdninstagram|fbcdn|facebook)\.(?:com|net)/",
+    r"https://(?:scontent|video|static)[\w.-]+\.(?:cdninstagram|fbcdn|facebook)\.(?:com|net)/",
     re.IGNORECASE,
 )
+
+# Twitterbot UA triggers Threads server-side rendering of OG tags (including media URLs).
+# Without it Threads returns a JS-only SPA shell with no extractable media.
+_TWITTERBOT_UA = "Twitterbot/1.0"
 
 _SAFARI_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -186,13 +191,11 @@ class SocialDownloader:
         tmpdir = tempfile.mkdtemp(prefix="threads_")
         cookies = self._load_cookies()
 
+        # Twitterbot UA triggers Threads SSR with OG media tags; Safari UA returns JS-only shell
         headers = {
-            "User-Agent": _SAFARI_UA,
+            "User-Agent": _TWITTERBOT_UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
         }
 
         try:
