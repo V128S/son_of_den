@@ -523,13 +523,16 @@ async def amain() -> None:
     # Start morning briefing scheduler
     briefing_task: asyncio.Task[None] | None = None
     if settings.morning_briefing_time:
+        _briefing_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
         briefing_task = start_briefing_scheduler(
             bot=bots["business"],
             admin_user_id=settings.admin_user_id,
             timezone_str=settings.user_timezone,
             briefing_time=settings.morning_briefing_time,
+            channels=_briefing_channels,
             calendar_client=calendar_client,
             ai_registry=ai_registry,
+            search_client=search_client,
         )
     else:
         logger.info("Morning briefing disabled (MORNING_BRIEFING_TIME not set)")

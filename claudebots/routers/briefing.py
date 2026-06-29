@@ -1,133 +1,175 @@
-"""Morning briefing scheduler.
+"""Morning briefing scheduler — two topic messages per day.
 
-Sends a daily AI-generated briefing to the admin at a configurable time.
-The briefing combines:
-- Today's calendar events (iCloud or Google)
-- Recent panel memory takeaways
-- A short AI summary tying it all together
-
-Uses Telegram HTML parse mode for rich formatting.
+Message 1: 🌍 Политика и мир (calendar + politics from channels + Exa)
+Message 2: 💻 Технологии · ИИ · Крипто (tech/AI/crypto from channels + Exa)
 """
 
 import asyncio
-import html
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
+
+from claudebots.core.feed_monitor import _sanitize_html, fetch_channel_entries_raw
 
 logger = logging.getLogger(__name__)
 
+_TG_MAX = 3900  # leave headroom under Telegram's 4096 limit
 
-def _e(text: str) -> str:
-    """Escape text for Telegram HTML."""
-    return html.escape(text)
+_BRIEFING_POLITICS_SYSTEM = (
+    "Ты — главный редактор утреннего брифинга для предпринимателя из Украины. "
+    "Из предложенных постов телеграм-каналов и новостных источников отбери и осмысли "
+    "ТОЛЬКО политические события, геополитику, войну, дипломатию, санкции, выборы. "
+    "Игнорируй технологии, крипту, финансы — только политика и мировые события.\n\n"
+    "ФОРМАТ — строго Telegram HTML, разрешены только теги <b>, <i>, <blockquote>:\n"
+    "<b>🌍 Заголовок события</b>\n"
+    "3-4 предложения: что произошло, детали, контекст.\n"
+    "<blockquote><i>→ Почему это важно.</i></blockquote>\n\n"
+    "Блоки разделены пустой строкой. "
+    "Эмодзи в заголовках: 🌍 ⚔️ 🇺🇦 🔴 🏛️ 📜\n"
+    "Каждый блок 60-80 слов. Пиши ТОЛЬКО на русском языке. "
+    "Не упоминай российские бренды (Яндекс, Сбербанк, ВКонтакте и подобные). "
+    "Без markdown (#, *, `), без заголовков разделов, без воды."
+)
+
+_BRIEFING_TECH_SYSTEM = (
+    "Ты — главный редактор утреннего брифинга для предпринимателя из Украины. "
+    "Из предложенных постов телеграм-каналов и новостных источников отбери и осмысли "
+    "ТОЛЬКО технологические события: ИИ, криптовалюта, стартапы, рынки, продукты. "
+    "Игнорируй политику и войну — только tech, AI, crypto, бизнес.\n\n"
+    "ФОРМАТ — строго Telegram HTML, разрешены только теги <b>, <i>, <blockquote>:\n"
+    "<b>💻 Заголовок события</b>\n"
+    "3-4 предложения: что произошло, детали, контекст.\n"
+    "<blockquote><i>→ Практический вывод для бизнеса.</i></blockquote>\n\n"
+    "Блоки разделены пустой строкой. "
+    "Эмодзи в заголовках: 💻 🤖 💰 📊 💎 🚀 🔬\n"
+    "Каждый блок 60-80 слов. Пиши ТОЛЬКО на русском языке. "
+    "Не упоминай российские бренды (Яндекс, Сбербанк, ВКонтакте и подобные). "
+    "Без markdown (#, *, `), без заголовков разделов, без воды."
+)
 
 
-async def _build_briefing(
+async def _build_briefing_messages(
     *,
     timezone_str: str,
-    calendar_client,  # GoogleCalendarClient | ICloudCalendarClient | None
-    ai_registry,  # AIRegistry
-) -> str:
-    """Build the morning briefing HTML text. Returned string is ready to send."""
-    tz = ZoneInfo(timezone_str)
-    now = datetime.now(tz)
+    channels: list[str],
+    calendar_client,
+    ai_registry,
+    search_client=None,
+) -> list[str]:
+    """Build 0-2 morning briefing messages. Returns empty list when no content."""
+    if not channels:
+        return []
 
-    ru_weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-    ru_months = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
-                 "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-    date_str = f"{ru_weekdays[now.weekday()]}, {now.day} {ru_months[now.month]}"
+    # ── Fetch channel posts (last 24 h) ───────────────────────────────────────
+    since = datetime.now(UTC).timestamp() - 86400
+    snippets: list[str] = []
+    for ch in channels:
+        try:
+            entries = await fetch_channel_entries_raw(ch, since)
+        except Exception as e:
+            logger.debug("Briefing: fetch failed for %s: %s", ch, e)
+            continue
+        for _, title, text, _ in entries[:25]:
+            snippet = (text or title)[:400].replace("\n", " ").strip()
+            if snippet:
+                snippets.append(f"• {snippet}")
+    channel_block = "\n".join(snippets)[:5000]
 
-    parts: list[str] = [f"<b>🌅 Утренний брифинг — {_e(date_str)}</b>\n"]
+    # ── Exa enrichment (optional) ─────────────────────────────────────────────
+    politics_exa = ""
+    tech_exa = ""
+    if search_client is not None and getattr(search_client, "enabled", False):
+        try:
+            r1 = await search_client.search("политика геополитика мировые новости", num_results=3)
+            if r1:
+                politics_exa = search_client.format_results(r1)
+        except Exception as e:
+            logger.debug("Briefing: Exa politics search failed: %s", e)
+        try:
+            r2 = await search_client.search(
+                "технологии искусственный интеллект криптовалюта", num_results=3
+            )
+            if r2:
+                tech_exa = search_client.format_results(r2)
+        except Exception as e:
+            logger.debug("Briefing: Exa tech search failed: %s", e)
 
-    # ── Calendar events ────────────────────────────────────────────────────────
-    calendar_block = ""
+    if not channel_block and not politics_exa and not tech_exa:
+        return []
+
+    # ── Calendar header (for message 1 only) ─────────────────────────────────
+    calendar_header = ""
     if calendar_client is not None:
         try:
             today_events = await calendar_client.get_upcoming_events_summary(days=1)
-            if today_events and today_events not in ("", "Нет запланированных событий на ближайшие дни."):
-                calendar_block = today_events
-                parts.append(f"<b>📅 Сегодня:</b>\n{_e(today_events)}\n")
-            else:
-                parts.append("📅 <i>Событий на сегодня нет.</i>\n")
+            _no_events = ("", "Нет запланированных событий на ближайшие дни.")
+            if today_events and today_events not in _no_events:
+                calendar_header = today_events
         except Exception as e:
             logger.warning("Briefing: calendar fetch failed: %s", e)
 
-    # ── Panel memories ─────────────────────────────────────────────────────────
-    try:
-        from claudebots.routers.panel import _panel_memories  # noqa: PLC0415
-        recent_memories = _panel_memories[-5:] if _panel_memories else []
-    except Exception:
-        recent_memories = []
+    # ── AI provider ───────────────────────────────────────────────────────────
+    _providers = ["openmodel", "groq", "openrouter_gemini", "claude"]
+    provider = next((p for p in _providers if ai_registry.has_provider(p)), None)
+    if provider is None:
+        return []
+    client = ai_registry.get_client(provider)
 
-    memory_block = ""
-    if recent_memories:
-        parts.append("<b>🧠 Последние выводы панели:</b>")
-        lines = []
-        for mem in recent_memories:
-            if isinstance(mem, dict):
-                label = f"[{_e(mem['topic'])}] " if mem.get("topic") else ""
-                lines.append(f"• {label}{_e(mem['text'])}")
-            elif isinstance(mem, str):
-                lines.append(f"• {_e(mem)}")
-        memory_block = "\n".join(lines)
-        parts.append(memory_block + "\n")
+    messages: list[str] = []
 
-    # ── AI summary ─────────────────────────────────────────────────────────────
-    ai_summary = ""
-    used_provider = ""
-    try:
-        for provider_name in ("openrouter_gemini", "groq", "claude"):
-            if ai_registry.has_provider(provider_name):
-                client = ai_registry.get_client(provider_name)
-                context_parts = []
-                if calendar_block:
-                    context_parts.append(f"События дня:\n{calendar_block}")
-                if memory_block:
-                    context_parts.append(f"Выводы прошлых обсуждений:\n{memory_block}")
+    for topic_system, topic_exa, header_prefix, content_prefix in [
+        (
+            _BRIEFING_POLITICS_SYSTEM,
+            politics_exa,
+            (
+                "🌍 <b>Политика и мир</b>\n\n"
+                + (f"<b>📅 Сегодня:</b> {calendar_header}\n\n" if calendar_header else "")
+            ),
+            "Посты каналов и новостные источники за последние 24 часа:\n\n",
+        ),
+        (
+            _BRIEFING_TECH_SYSTEM,
+            tech_exa,
+            "💻 <b>Технологии · ИИ · Крипто</b>\n\n",
+            "Посты каналов и новостные источники за последние 24 часа:\n\n",
+        ),
+    ]:
+        content = channel_block
+        if topic_exa:
+            content = content + "\n\n" + topic_exa
+        content = content[:7000]
+        if not content.strip():
+            continue
+        try:
+            ai_text = await client.complete(
+                system=topic_system,
+                messages=[{"role": "user", "content": content_prefix + content}],
+                max_tokens=1800,
+            )
+            ai_text = _sanitize_html(ai_text or "").strip()
+            if not ai_text:
+                continue
+            full = header_prefix + ai_text
+            # Truncate to Telegram limit, preserving whole characters
+            if len(full) > _TG_MAX:
+                full = full[:_TG_MAX]
+            messages.append(full)
+        except Exception as e:
+            logger.warning("Briefing: AI generation failed for topic: %s", e)
 
-                if not context_parts:
-                    break
-
-                prompt = (
-                    "\n\n".join(context_parts) + "\n\n"
-                    "Напиши утренний прогноз на день — 2-3 предложения на русском языке. "
-                    "Что важно не забыть, что может быть актуально из прошлых обсуждений. "
-                    "Живым языком. Только сам текст, без заголовков и пояснений."
-                )
-                ai_summary = await client.complete(
-                    system=(
-                        "Ты личный ассистент, помогаешь начать день продуктивно. "
-                        "Отвечай ТОЛЬКО кратким текстом на русском языке — без мета-комментариев, "
-                        "без пояснений задачи, без ссылок на контекст или инструкции. "
-                        "Только сам текст брифинга."
-                    ),
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=150,
-                )
-                ai_summary = ai_summary.strip()
-                used_provider = provider_name
-                break
-    except Exception as e:
-        logger.warning("Briefing: AI summary failed: %s", e)
-
-    if ai_summary:
-        parts.append(f"<blockquote>💬 {_e(ai_summary)}</blockquote>")
-
-    if used_provider:
-        logger.debug("Briefing AI summary generated by: %s", used_provider)
-
-    return "\n".join(parts)
+    return messages
 
 
 async def _briefing_loop(
     *,
-    bot,  # Bot
+    bot,
     admin_user_id: int,
     timezone_str: str,
     briefing_time: str,
+    channels: list[str],
     calendar_client,
     ai_registry,
+    search_client=None,
 ) -> None:
     """Send morning briefing at a fixed local time each day."""
     from claudebots.core.scheduling import daily_at
@@ -135,13 +177,21 @@ async def _briefing_loop(
     tz = ZoneInfo(timezone_str)
     async for _ in daily_at(briefing_time, tz, label="Briefing scheduler", log=logger):
         try:
-            text = await _build_briefing(
+            messages = await _build_briefing_messages(
                 timezone_str=timezone_str,
+                channels=channels,
                 calendar_client=calendar_client,
                 ai_registry=ai_registry,
+                search_client=search_client,
             )
-            await bot.send_message(admin_user_id, text, parse_mode="HTML")
-            logger.info("Morning briefing sent to admin")
+            for i, msg in enumerate(messages):
+                await bot.send_message(admin_user_id, msg, parse_mode="HTML")
+                if i < len(messages) - 1:
+                    await asyncio.sleep(1)
+            if messages:
+                logger.info("Morning briefing sent (%d message(s))", len(messages))
+            else:
+                logger.info("Morning briefing: no content to send")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -150,12 +200,14 @@ async def _briefing_loop(
 
 def start_briefing_scheduler(
     *,
-    bot,  # Bot
+    bot,
     admin_user_id: int,
     timezone_str: str,
     briefing_time: str,
+    channels: list[str],
     calendar_client,
     ai_registry,
+    search_client=None,
 ) -> "asyncio.Task[None]":
     """Create and return the morning briefing background task."""
     task: asyncio.Task[None] = asyncio.create_task(
@@ -164,8 +216,10 @@ def start_briefing_scheduler(
             admin_user_id=admin_user_id,
             timezone_str=timezone_str,
             briefing_time=briefing_time,
+            channels=channels,
             calendar_client=calendar_client,
             ai_registry=ai_registry,
+            search_client=search_client,
         )
     )
     task.add_done_callback(
