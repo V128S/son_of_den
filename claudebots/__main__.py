@@ -11,7 +11,6 @@ from claudebots.core import state as _state
 from claudebots.core.ai_registry import AIClient, AIRegistry, FallbackClient
 from claudebots.core.alerts import AlertSender
 from claudebots.core.calendar_client import GoogleCalendarClient
-from claudebots.core.icloud_calendar_client import ICloudCalendarClient
 from claudebots.core.claude_client import ClaudeClient
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
@@ -19,6 +18,7 @@ from claudebots.core.feed_monitor import start_digest_scheduler as start_feed_di
 from claudebots.core.feed_monitor import start_feed_monitor
 from claudebots.core.gemini_client import GeminiClient
 from claudebots.core.groq_client import GroqClient
+from claudebots.core.icloud_calendar_client import ICloudCalendarClient
 from claudebots.core.meters_client import MetersClient
 from claudebots.core.obsidian_client import ObsidianClient
 from claudebots.core.openmodel_client import OpenModelClient
@@ -520,16 +520,18 @@ async def amain() -> None:
             panel_chat_id=settings.panel_chat_id,
         )
 
+    # Compute feed channels (used by both briefing scheduler and feed monitor)
+    feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
+
     # Start morning briefing scheduler
     briefing_task: asyncio.Task[None] | None = None
     if settings.morning_briefing_time:
-        _briefing_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
         briefing_task = start_briefing_scheduler(
             bot=bots["business"],
             admin_user_id=settings.admin_user_id,
             timezone_str=settings.user_timezone,
             briefing_time=settings.morning_briefing_time,
-            channels=_briefing_channels,
+            channels=feed_channels,
             calendar_client=calendar_client,
             ai_registry=ai_registry,
             search_client=search_client,
@@ -558,7 +560,6 @@ async def amain() -> None:
 
     # Start feed monitor (auto-topics from Telegram channel RSS)
     feed_task: asyncio.Task[None] | None = None
-    feed_channels = [c.strip() for c in settings.feed_channels.split(",") if c.strip()]
     if settings.panel_enabled and feed_channels and settings.feed_monitor_enabled:
         feed_task = start_feed_monitor(
             channels=feed_channels,
