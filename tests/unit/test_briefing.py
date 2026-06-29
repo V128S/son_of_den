@@ -70,7 +70,7 @@ async def test_build_briefing_messages_includes_calendar_in_first(ai_registry_mo
     assert "Встреча" not in messages[1]
 
 
-async def test_build_briefing_messages_empty_channels_returns_empty(ai_registry_mock):
+async def test_build_briefing_messages_empty_posts_returns_empty(ai_registry_mock):
     from claudebots.routers.briefing import _build_briefing_messages
 
     with patch(
@@ -133,7 +133,7 @@ async def test_build_briefing_messages_truncated_to_3900(ai_registry_mock, chann
         )
 
     for msg in messages:
-        assert len(msg) <= 4096
+        assert len(msg) <= 3900
 
 
 async def test_build_briefing_messages_survives_ai_failure(ai_registry_mock, channel_entries):
