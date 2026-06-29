@@ -401,7 +401,14 @@ _DIGEST_SYSTEM = (
     "Каждый блок — 60-80 слов. Живой язык без воды."
 )
 
-_ALLOWED_TAGS_RE = re.compile(r"</?(?:b|i|blockquote)>", re.IGNORECASE)
+_ALLOWED_TAGS_RE = re.compile(
+    r"(?:"
+    r"</(?:b|strong|i|em|u|s|strike|tg-spoiler|blockquote|code)>"
+    r"|<(?:b|strong|i|em|u|s|strike|tg-spoiler|code)>"
+    r"|<blockquote(?:\s+expandable)?>"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_html(text: str) -> str:
@@ -421,9 +428,14 @@ def _sanitize_html(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
     # Close any tags left open by the model
+    _ALIASES = {"strong": "b", "em": "i", "strike": "s"}
+    _CLOSEABLE = {"b", "i", "u", "s", "tg-spoiler", "blockquote", "code"}
     stack: list[str] = []
-    for m in re.finditer(r"<(/?)([bi]|blockquote)>", text):
-        closing, tag = m.group(1), m.group(2)
+    for m in re.finditer(r"<(/)?\s*([a-z-]+)(?:\s+\w+)?>", text, re.IGNORECASE):
+        closing, raw_tag = m.group(1), m.group(2).lower()
+        tag = _ALIASES.get(raw_tag, raw_tag)
+        if tag not in _CLOSEABLE:
+            continue
         if not closing:
             stack.append(tag)
         elif stack and stack[-1] == tag:
