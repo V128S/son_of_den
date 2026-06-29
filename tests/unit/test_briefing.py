@@ -4,7 +4,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from claudebots.core.feed_monitor import fetch_channel_entries_raw  # noqa: F401
 from claudebots.routers.briefing import _build_briefing
+
+
+def test_fetch_channel_entries_raw_is_public() -> None:
+    """Smoke test: verify fetch_channel_entries_raw is importable as public."""
+    # The import at the top of the file already validates this.
+    pass
 
 
 @pytest.fixture()

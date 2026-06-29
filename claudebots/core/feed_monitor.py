@@ -351,7 +351,7 @@ async def _feed_loop(monitor: FeedMonitor, interval_seconds: int) -> None:
         await asyncio.sleep(interval_seconds)
 
 
-async def _fetch_channel_entries_raw(
+async def fetch_channel_entries_raw(
     channel: str, since_ts: float
 ) -> list[tuple[str, str, str, float]]:
     """Fetch all feed entries for *channel* newer than *since_ts*."""
@@ -451,7 +451,7 @@ async def build_daily_digest(
     since = datetime.now(UTC).timestamp() - 86400
     all_entries: dict[str, list[tuple[str, str, str, float]]] = {}
     for ch in channels:
-        entries = await _fetch_channel_entries_raw(ch, since)
+        entries = await fetch_channel_entries_raw(ch, since)
         if entries:
             all_entries[ch] = entries
 

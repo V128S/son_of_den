@@ -424,7 +424,7 @@ async def test_build_daily_digest_prefers_openmodel():
         ("https://t.me/x/1", "Заголовок", "Текст новости про рынок", datetime.now(UTC).timestamp())
     ]
     with patch(
-        "claudebots.core.feed_monitor._fetch_channel_entries_raw",
+        "claudebots.core.feed_monitor.fetch_channel_entries_raw",
         AsyncMock(return_value=entries),
     ):
         digest = await build_daily_digest(
@@ -441,7 +441,7 @@ async def test_build_daily_digest_none_without_entries():
     ai_registry = MagicMock()
     ai_registry.providers = ["openmodel"]
     with patch(
-        "claudebots.core.feed_monitor._fetch_channel_entries_raw",
+        "claudebots.core.feed_monitor.fetch_channel_entries_raw",
         AsyncMock(return_value=[]),
     ):
         digest = await build_daily_digest(
