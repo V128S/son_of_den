@@ -154,9 +154,10 @@ async def _build_briefing_messages(
             if not ai_text:
                 continue
             full = header_prefix + ai_text
-            # Truncate to Telegram limit, preserving whole characters
+            # Truncate to Telegram limit at the last paragraph boundary
             if len(full) > _TG_MAX:
-                full = full[:_TG_MAX]
+                cut = full.rfind("\n\n", 0, _TG_MAX)
+                full = full[:cut] if cut > 0 else full[:_TG_MAX]
             messages.append(full)
         except Exception as e:
             logger.warning("Briefing: AI generation failed for topic: %s", e)
