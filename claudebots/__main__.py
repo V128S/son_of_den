@@ -486,7 +486,7 @@ async def amain() -> None:
 
     # Evict competing server instances at startup
     logger.info("Evicting competing bot sessions...")
-    _seize_sessions_sync(bots)
+    await asyncio.to_thread(_seize_sessions_sync, bots)
     await asyncio.sleep(0.5)
 
     # Start background guardian to maintain session dominance

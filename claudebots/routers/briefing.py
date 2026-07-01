@@ -14,6 +14,7 @@ from claudebots.core.feed_monitor import _sanitize_html, fetch_channel_entries_r
 logger = logging.getLogger(__name__)
 
 _TG_MAX = 3900  # leave headroom under Telegram's 4096 limit
+_SECONDS_PER_DAY = 86_400
 
 _BRIEFING_POLITICS_SYSTEM = (
     "Ты — главный редактор утреннего брифинга для предпринимателя из Украины. "
@@ -65,7 +66,7 @@ async def _build_briefing_messages(
         return []
 
     # ── Fetch channel posts (last 24 h) ───────────────────────────────────────
-    since = datetime.now(UTC).timestamp() - 86400
+    since = datetime.now(UTC).timestamp() - _SECONDS_PER_DAY
     snippets: list[str] = []
     for ch in channels:
         try:

@@ -458,7 +458,7 @@ class PanelRoundRunner:
         """
         logger.debug("_send: chat=%s thread=%s len=%d", self.panel_chat_id, self.thread_id, len(text))
         compose_seconds = random.uniform(TYPING_DELAY_MIN, TYPING_DELAY_MAX)
-        deadline = asyncio.get_event_loop().time() + compose_seconds
+        deadline = asyncio.get_running_loop().time() + compose_seconds
         while True:
             try:
                 await bot.send_chat_action(
@@ -468,7 +468,7 @@ class PanelRoundRunner:
                 )
             except Exception:
                 pass  # typing-action failure must not block the message
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
             await asyncio.sleep(min(4.0, remaining))
@@ -531,7 +531,7 @@ class PanelRoundRunner:
             return False
 
         buffer = ""
-        last_edit = asyncio.get_event_loop().time()
+        last_edit = asyncio.get_running_loop().time()
         stream_ok = False
         try:
             async for chunk in client.stream(
@@ -541,7 +541,7 @@ class PanelRoundRunner:
             ):
                 buffer += chunk
                 stream_ok = True
-                now = asyncio.get_event_loop().time()
+                now = asyncio.get_running_loop().time()
                 if now - last_edit >= 0.8 and buffer.strip():
                     try:
                         await speaker_bot.edit_message_text(
@@ -865,7 +865,7 @@ class PanelRoundRunner:
 
             # ── Streaming path ───────────────────────────────────────────────
             raw_buffer = ""
-            last_edit = asyncio.get_event_loop().time()
+            last_edit = asyncio.get_running_loop().time()
             stream_ok = False
             try:
                 async for chunk in mod_client.stream(
@@ -875,7 +875,7 @@ class PanelRoundRunner:
                 ):
                     raw_buffer += chunk
                     stream_ok = True
-                    now = asyncio.get_event_loop().time()
+                    now = asyncio.get_running_loop().time()
                     if now - last_edit >= 1.5 and raw_buffer.strip() and mod_placeholder:
                         try:
                             await moderator_bot.edit_message_text(

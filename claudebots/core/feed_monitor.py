@@ -244,7 +244,7 @@ class FeedMonitor:
                 for url, title, text, pub_ts in await self._fetch_entries(client, channel):
                     if url in seen_set:
                         continue
-                    if now - pub_ts > 86_400:  # skip entries older than 24 h
+                    if now - pub_ts > _SECONDS_PER_DAY:  # skip entries older than 24 h
                         continue
                     score = await self._score_entry(title, text)
                     if score > best_score:
@@ -460,7 +460,7 @@ async def build_daily_digest(
     """
     if not channels:
         return None
-    since = datetime.now(UTC).timestamp() - 86400
+    since = datetime.now(UTC).timestamp() - _SECONDS_PER_DAY
     all_entries: dict[str, list[tuple[str, str, str, float]]] = {}
     for ch in channels:
         entries = await fetch_channel_entries_raw(ch, since)
@@ -549,6 +549,7 @@ async def _digest_loop(
 
 
 _TG_MSG_LIMIT = 4000  # Telegram hard-caps at 4096; leave margin for header
+_SECONDS_PER_DAY = 86_400
 
 
 def _split_digest(text: str, limit: int = _TG_MSG_LIMIT) -> list[str]:

@@ -46,6 +46,9 @@ business_router = Router(name="business")
 _EDIT_THROTTLE_SECONDS = 1.0
 # Placeholder text — non-empty (Telegram rejects empty messages) and visually subtle.
 _PLACEHOLDER = "…"
+# Telegram hard-caps messages at 4096 characters.
+_TG_MAX = 4096
+_SECONDS_PER_DAY = 86_400
 
 # Cache for user_id -> topic_id mapping (in-memory, resets on restart)
 _contact_topics: dict[int, int] = {}
@@ -353,16 +356,6 @@ async def _route_owner_to_category(
         logger.warning("create_forum_topic failed: %s", e)
         return current_thread_id  # last resort: respond in current thread
 
-
-# Keep old name as alias for backwards compat (used in _on_panel_command import path)
-async def _analyze_admin_topic_and_get_thread(
-    bot: Bot,
-    chat_id: int,
-    question: str,
-    ai_registry: AIRegistry,
-) -> int | None:
-    category = await _classify_owner_category(question, ai_registry)
-    return await _route_owner_to_category(bot, chat_id, None, category)
 
 
 @business_router.business_message(F.text)
@@ -1171,7 +1164,6 @@ async def handle_business_message(
         await alerts.send("business_placeholder", f"{type(e).__name__}: {e}")
         return
 
-    _TG_MAX = 4096
     buffer = ""
     last_edit_at = now()
     streaming_failed = False
@@ -2033,7 +2025,6 @@ async def handle_private_message(
         await alerts.send("private_placeholder", f"{type(e).__name__}: {e}")
         return
 
-    _TG_MAX = 4096
     buffer = ""
     last_edit_at = now()
     streaming_failed = False
@@ -2191,7 +2182,7 @@ async def check_followup_contacts(bot: "Bot", admin_supergroup_id: int, followup
     """Send a one-time reminder for contacts who have been silent for *followup_days* days."""
     if followup_days <= 0 or not _contact_data:
         return
-    threshold = time.time() - followup_days * 86400
+    threshold = time.time() - followup_days * _SECONDS_PER_DAY
     for uid, data in list(_contact_data.items()):
         last_in = data.get("last_inbound_ts", 0.0)
         if not last_in or last_in > threshold:
@@ -2203,7 +2194,7 @@ async def check_followup_contacts(bot: "Bot", admin_supergroup_id: int, followup
         if topic_id is None:
             continue
         name = data.get("name", f"ID {uid}")
-        days_silent = max(1, int((time.time() - last_in) / 86400))
+        days_silent = max(1, int((time.time() - last_in) / _SECONDS_PER_DAY))
         last_text = ""
         for m in reversed(data.get("messages", [])):
             if m.get("role") == "contact":
