@@ -418,7 +418,7 @@ async def test_build_daily_digest_prefers_openmodel():
     )
     ai_registry = MagicMock()
     ai_registry.providers = ["groq", "openmodel", "claude"]
-    ai_registry.get_client = MagicMock(return_value=client)
+    ai_registry.get_cheapest_client = MagicMock(return_value=client)
 
     entries = [
         ("https://t.me/x/1", "Заголовок", "Текст новости про рынок", datetime.now(UTC).timestamp())
@@ -433,7 +433,7 @@ async def test_build_daily_digest_prefers_openmodel():
 
     assert digest is not None
     assert "Главное:" in digest
-    ai_registry.get_client.assert_called_once_with("openmodel")
+    ai_registry.get_cheapest_client.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from aiogram.types import (
 
 from claudebots.core import state as _state
 from claudebots.core.ai_registry import AIRegistry
+from claudebots.core.task_utils import task_error_callback
 from claudebots.core.alerts import AlertSender
 from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.conversation import ConversationStore
@@ -359,6 +360,94 @@ async def _route_owner_to_category(
         logger.warning("create_forum_topic failed: %s", e)
         return current_thread_id  # last resort: respond in current thread
 
+
+async def _send_media_files(
+    bot: Bot,
+    chat_id: int,
+    thread_id: int | None,
+    files: list,
+) -> None:
+    """Send one or more MediaFile objects to a Telegram chat/topic."""
+    if len(files) == 1:
+        f = files[0]
+        inp = FSInputFile(str(f.path))
+        cap = f.caption or None
+        if f.media_type == "photo":
+            await bot.send_photo(chat_id, inp, caption=cap, message_thread_id=thread_id)
+        elif f.media_type == "video":
+            await bot.send_video(chat_id, inp, caption=cap, message_thread_id=thread_id)
+        else:
+            await bot.send_document(chat_id, inp, caption=cap, message_thread_id=thread_id)
+    else:
+        group = []
+        for i, f in enumerate(files[:10]):
+            inp = FSInputFile(str(f.path))
+            cap = f.caption if i == 0 else None
+            if f.media_type in ("photo", "document") and f.path.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+                group.append(InputMediaPhoto(media=inp, caption=cap))
+            else:
+                group.append(InputMediaVideo(media=inp, caption=cap))
+        await bot.send_media_group(chat_id, group, message_thread_id=thread_id)
+
+
+async def _stream_to_placeholder(
+    *,
+    bot: Bot,
+    placeholder: Message,
+    client,
+    system: str,
+    messages: list,
+    max_tokens: int,
+    persona,
+    alerts,
+    conv,
+    key: str,
+    business_connection_id: str | None = None,
+    alert_key: str = "stream",
+    edit_throttle_seconds: float = _EDIT_THROTTLE_SECONDS,
+) -> None:
+    """Stream AI response into a placeholder message, then save to conversation."""
+    buffer = ""
+    last_edit_at = time.monotonic()
+    streaming_failed = False
+
+    try:
+        async for delta in client.stream(system=system, messages=messages, max_tokens=max_tokens):
+            remaining = _TG_MAX - len(buffer)
+            if remaining <= 0:
+                break
+            buffer += delta[:remaining]
+            if time.monotonic() - last_edit_at >= edit_throttle_seconds and buffer:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=placeholder.chat.id,
+                        message_id=placeholder.message_id,
+                        text=buffer,
+                        business_connection_id=business_connection_id,
+                        parse_mode=None,
+                    )
+                    last_edit_at = time.monotonic()
+                except Exception as e:
+                    logger.debug("intermediate edit failed: %s", e)
+    except Exception as e:
+        logger.warning("%s stream (%s) failed: %s", alert_key, getattr(persona, "provider", "?"), e)
+        await alerts.send(alert_key, f"{type(e).__name__}: {e}")
+        streaming_failed = True
+
+    response = persona.fallback if streaming_failed or not buffer else buffer
+
+    try:
+        await bot.edit_message_text(
+            chat_id=placeholder.chat.id,
+            message_id=placeholder.message_id,
+            text=response,
+            business_connection_id=business_connection_id,
+            parse_mode=None,
+        )
+    except Exception as e:
+        logger.warning("Final edit failed: %s", e)
+
+    conv.add(key, "assistant", response)
 
 
 @business_router.business_message(F.text)
@@ -797,7 +886,7 @@ async def _on_document_message(
             pdf_text = None
 
         if pdf_text:
-            client = ai_registry.get_client("openrouter_gemini" if "openrouter_gemini" in ai_registry.providers else "claude")
+            client = ai_registry.get_cheapest_client(["openrouter_gemini", "claude"])
             summary = await client.complete(
                 system="Ты делаешь краткие резюме документов. Язык ответа: русский.",
                 messages=[{
@@ -1161,52 +1250,21 @@ async def handle_business_message(
         await alerts.send("business_placeholder", f"{type(e).__name__}: {e}")
         return
 
-    buffer = ""
-    last_edit_at = now()
-    streaming_failed = False
-
-    try:
-        async for delta in client.stream(
-            system=system_prompt,
-            messages=conv.get(key),
-            max_tokens=persona.max_tokens,
-        ):
-            remaining = _TG_MAX - len(buffer)
-            if remaining <= 0:
-                break  # already at telegram limit
-            buffer += delta[:remaining]
-            if now() - last_edit_at >= edit_throttle_seconds and buffer:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=placeholder.chat.id,
-                        message_id=placeholder.message_id,
-                        text=buffer,
-                        business_connection_id=message.business_connection_id,
-                        parse_mode=None,
-                    )
-                    last_edit_at = now()
-                except Exception as e:
-                    logger.debug("intermediate edit failed: %s", e)
-    except Exception as e:
-        logger.warning("Business stream (%s) failed: %s", persona.provider, e)
-        await alerts.send("business", f"{type(e).__name__}: {e}")
-        streaming_failed = True
-
-    response = persona.fallback if streaming_failed or not buffer else buffer
-
-    # Final edit — always replace placeholder with the final text (or fallback).
-    try:
-        await bot.edit_message_text(
-            chat_id=placeholder.chat.id,
-            message_id=placeholder.message_id,
-            text=response,
-            business_connection_id=message.business_connection_id,
-            parse_mode=None,
-        )
-    except Exception as e:
-        logger.warning("Final edit failed: %s", e)
-
-    conv.add(key, "assistant", response)
+    await _stream_to_placeholder(
+        bot=bot,
+        placeholder=placeholder,
+        client=client,
+        system=system_prompt,
+        messages=list(conv.get(key)),
+        max_tokens=persona.max_tokens,
+        persona=persona,
+        alerts=alerts,
+        conv=conv,
+        key=key,
+        business_connection_id=message.business_connection_id,
+        alert_key="business",
+        edit_throttle_seconds=edit_throttle_seconds,
+    )
 
     # ── Sheets: detect price-sheet URL in contact's message ──────────────
     if sheets_client is not None and message.from_user:
@@ -1610,9 +1668,7 @@ async def handle_private_message(
         except Exception:
             pass
         try:
-            _exp_client = ai_registry.get_client(
-                "openrouter_gemini" if "openrouter_gemini" in ai_registry.providers else "claude"
-            )
+            _exp_client = ai_registry.get_cheapest_client(["openrouter_gemini", "claude"])
             _exp_raw = await _exp_client.complete(
                 system=(
                     "Извлеки расход из сообщения. Верни ТОЛЬКО JSON вида: "
@@ -1687,26 +1743,7 @@ async def handle_private_message(
                 return
 
             try:
-                if len(_media_files) == 1:
-                    _f = _media_files[0]
-                    _inp = FSInputFile(str(_f.path))
-                    if _f.media_type == "photo":
-                        await _insta_bot.send_photo(_insta_send_chat, _inp, caption=_f.caption or None, message_thread_id=_insta_thread_id)
-                    elif _f.media_type == "video":
-                        await _insta_bot.send_video(_insta_send_chat, _inp, caption=_f.caption or None, message_thread_id=_insta_thread_id)
-                    else:
-                        await _insta_bot.send_document(_insta_send_chat, _inp, caption=_f.caption or None, message_thread_id=_insta_thread_id)
-                else:
-                    _group = []
-                    for _i, _f in enumerate(_media_files[:10]):
-                        _inp = FSInputFile(str(_f.path))
-                        _cap = _f.caption if _i == 0 else None
-                        if _f.media_type in ("photo", "document") and _f.path.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
-                            _group.append(InputMediaPhoto(media=_inp, caption=_cap))
-                        else:
-                            _group.append(InputMediaVideo(media=_inp, caption=_cap))
-                    await _insta_bot.send_media_group(_insta_send_chat, _group, message_thread_id=_insta_thread_id)
-
+                await _send_media_files(_insta_bot, _insta_send_chat, _insta_thread_id, _media_files)
             except Exception as _e:
                 logger.warning("Instagram send failed: %s", _e)
                 await _insta_bot.send_message(
@@ -1866,26 +1903,7 @@ async def handle_private_message(
                 return
 
             try:
-                if len(_social_files) == 1:
-                    _sf = _social_files[0]
-                    _si = FSInputFile(str(_sf.path))
-                    if _sf.media_type == "photo":
-                        await _social_bot.send_photo(_social_send_chat, _si, caption=_sf.caption or None, message_thread_id=_social_thread_id)
-                    elif _sf.media_type == "video":
-                        await _social_bot.send_video(_social_send_chat, _si, caption=_sf.caption or None, message_thread_id=_social_thread_id)
-                    else:
-                        await _social_bot.send_document(_social_send_chat, _si, caption=_sf.caption or None, message_thread_id=_social_thread_id)
-                else:
-                    _sgroup = []
-                    for _si_idx, _sf in enumerate(_social_files[:10]):
-                        _si = FSInputFile(str(_sf.path))
-                        _sc = _sf.caption if _si_idx == 0 else None
-                        if _sf.media_type in ("photo", "document") and _sf.path.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
-                            _sgroup.append(InputMediaPhoto(media=_si, caption=_sc))
-                        else:
-                            _sgroup.append(InputMediaVideo(media=_si, caption=_sc))
-                    await _social_bot.send_media_group(_social_send_chat, _sgroup, message_thread_id=_social_thread_id)
-
+                await _send_media_files(_social_bot, _social_send_chat, _social_thread_id, _social_files)
             except Exception as _e:
                 logger.warning("Social send failed: %s", _e)
                 await _social_bot.send_message(
@@ -2004,49 +2022,20 @@ async def handle_private_message(
         await alerts.send("private_placeholder", f"{type(e).__name__}: {e}")
         return
 
-    buffer = ""
-    last_edit_at = now()
-    streaming_failed = False
-
-    try:
-        async for delta in client.stream(
-            system=system_prompt,
-            messages=conv.get(key),
-            max_tokens=persona.max_tokens,
-        ):
-            remaining = _TG_MAX - len(buffer)
-            if remaining <= 0:
-                break  # already at telegram limit
-            buffer += delta[:remaining]
-            if now() - last_edit_at >= edit_throttle_seconds and buffer:
-                try:
-                    await bot.edit_message_text(
-                        chat_id=placeholder.chat.id,
-                        message_id=placeholder.message_id,
-                        text=buffer,
-                        parse_mode=None,
-                    )
-                    last_edit_at = now()
-                except Exception as e:
-                    logger.debug("intermediate edit failed: %s", e)
-    except Exception as e:
-        logger.warning("Private stream (%s) failed: %s", persona.provider, e)
-        await alerts.send("private", f"{type(e).__name__}: {e}")
-        streaming_failed = True
-
-    response = persona.fallback if streaming_failed or not buffer else buffer
-
-    try:
-        await bot.edit_message_text(
-            chat_id=placeholder.chat.id,
-            message_id=placeholder.message_id,
-            text=response,
-            parse_mode=None,
-        )
-    except Exception as e:
-        logger.warning("Final edit failed: %s", e)
-
-    conv.add(key, "assistant", response)
+    await _stream_to_placeholder(
+        bot=bot,
+        placeholder=placeholder,
+        client=client,
+        system=system_prompt,
+        messages=list(conv.get(key)),
+        max_tokens=persona.max_tokens,
+        persona=persona,
+        alerts=alerts,
+        conv=conv,
+        key=key,
+        alert_key="private",
+        edit_throttle_seconds=edit_throttle_seconds,
+    )
 
 
 

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from claudebots.core.ai_registry import AIRegistry
+from claudebots.core.task_utils import task_error_callback
 
 if TYPE_CHECKING:
     from claudebots.core.alerts import AlertSender
@@ -63,11 +64,7 @@ async def _select_main_news(
     if not headlines:
         return ""
 
-    provider = next(
-        (p for p in ["openrouter_gemini", "groq", "claude"] if ai_registry.has_provider(p)),
-        "claude"
-    )
-    client = ai_registry.get_client(provider)
+    client = ai_registry.get_cheapest_client(["openrouter_gemini", "groq", "claude"])
 
     headlines_list = "\n".join(f"{i+1}. {h}" for i, h in enumerate(headlines))
     system_prompt = "Ты опытный новостной редактор и аналитик. Твоя задача — выбрать 1-2 самые главные и важные новости из предложенного списка для обсуждения экспертами."

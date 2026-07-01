@@ -16,6 +16,7 @@ def ai_registry_mock():
     registry = MagicMock()
     registry.has_provider = lambda name: name == "groq"
     registry.get_client = lambda name: client
+    registry.get_cheapest_client = lambda providers: client
     return registry
 
 
@@ -118,7 +119,7 @@ async def test_build_briefing_messages_truncated_to_3900(ai_registry_mock, chann
     from claudebots.routers.briefing import _build_briefing_messages
 
     long_ai_response = "А" * 5000
-    ai_registry_mock.get_client("groq").complete = AsyncMock(return_value=long_ai_response)
+    ai_registry_mock.get_cheapest_client(["groq"]).complete = AsyncMock(return_value=long_ai_response)
 
     with patch(
         "claudebots.routers.briefing.fetch_channel_entries_raw",
@@ -139,7 +140,7 @@ async def test_build_briefing_messages_truncated_to_3900(ai_registry_mock, chann
 async def test_build_briefing_messages_survives_ai_failure(ai_registry_mock, channel_entries):
     from claudebots.routers.briefing import _build_briefing_messages
 
-    ai_registry_mock.get_client("groq").complete = AsyncMock(side_effect=RuntimeError("AI down"))
+    ai_registry_mock.get_cheapest_client(["groq"]).complete = AsyncMock(side_effect=RuntimeError("AI down"))
 
     with patch(
         "claudebots.routers.briefing.fetch_channel_entries_raw",

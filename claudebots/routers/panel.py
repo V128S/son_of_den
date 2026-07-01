@@ -23,6 +23,7 @@ from claudebots.core.ai_registry import AIRegistry
 from claudebots.core.alerts import AlertSender
 from claudebots.core.conversation import ConversationStore
 from claudebots.core.personas import PersonaRegistry
+from claudebots.core.task_utils import task_error_callback
 
 logger = logging.getLogger(__name__)
 

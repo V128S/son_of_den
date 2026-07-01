@@ -123,8 +123,7 @@ async def test_select_main_news_with_ai():
     ai_registry = MagicMock()
     client = AsyncMock()
     client.complete = AsyncMock(return_value="1. **OpenAI releases GPT-5**\n   Great new model.")
-    ai_registry.has_provider = MagicMock(return_value=True)
-    ai_registry.get_client = MagicMock(return_value=client)
+    ai_registry.get_cheapest_client = MagicMock(return_value=client)
 
     result = await _select_main_news(headlines, ai_registry)
     assert "OpenAI releases GPT-5" in result
@@ -141,8 +140,7 @@ async def test_build_news_topic_with_ai_selection():
     ai_registry = MagicMock()
     client = AsyncMock()
     client.complete = AsyncMock(return_value="1. **OpenAI releases GPT-5**\n   Great new model.")
-    ai_registry.has_provider = MagicMock(return_value=True)
-    ai_registry.get_client = MagicMock(return_value=client)
+    ai_registry.get_cheapest_client = MagicMock(return_value=client)
 
     topic = await _build_news_topic(
         interests="AI",
