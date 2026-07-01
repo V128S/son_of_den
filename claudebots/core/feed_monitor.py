@@ -479,13 +479,10 @@ async def build_daily_digest(
         return None
     block = "\n".join(lines)[:6000]
 
-    available = list(ai_registry.providers)
-    provider = next(
-        (p for p in ["openmodel", "groq", "openrouter_gemini", "openrouter_deepseek", "claude"] if p in available),
-        available[0] if available else "claude",
-    )
     try:
-        client = ai_registry.get_client(provider)
+        client = ai_registry.get_cheapest_client(
+            ["openmodel", "groq", "openrouter_gemini", "openrouter_deepseek", "claude"]
+        )
         digest = await client.complete(
             system=f"{_DIGEST_SYSTEM}\n\nИнтересы читателя: {interests}.",
             messages=[{"role": "user", "content": f"Посты канала за последние 24 часа:\n\n{block}"}],

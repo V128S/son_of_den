@@ -249,15 +249,5 @@ class YTDownloader:
 
     @staticmethod
     def _find_downloaded(tmpdir: str, video_id: str) -> Path | None:
-        """Find the file yt-dlp actually wrote (name may differ from template)."""
-        tmp = Path(tmpdir)
-        candidates = sorted(
-            tmp.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0
-        )
-        if not candidates:
-            return None
-        # Prefer file with video_id in the name
-        for c in candidates:
-            if video_id and video_id in c.name:
-                return c
-        return candidates[-1]
+        from claudebots.services._dl_utils import find_downloaded  # noqa: PLC0415
+        return find_downloaded(tmpdir, video_id)

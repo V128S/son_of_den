@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from claudebots.core.feed_monitor import sanitize_html, fetch_channel_entries_raw
+from claudebots.core.task_utils import task_error_callback
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +119,10 @@ async def _build_briefing_messages(
             logger.warning("Briefing: calendar fetch failed: %s", e)
 
     # ── AI provider ───────────────────────────────────────────────────────────
-    _providers = ["openmodel", "groq", "openrouter_gemini", "claude"]
-    provider = next((p for p in _providers if ai_registry.has_provider(p)), None)
-    if provider is None:
+    try:
+        client = ai_registry.get_cheapest_client(["openmodel", "groq", "openrouter_gemini", "claude"])
+    except KeyError:
         return []
-    client = ai_registry.get_client(provider)
 
     messages: list[str] = []
 

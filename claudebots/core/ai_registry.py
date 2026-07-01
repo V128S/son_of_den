@@ -134,6 +134,16 @@ class AIRegistry:
         """Check if a provider is registered."""
         return provider in self._clients
 
+    def get_cheapest_client(self, order: list[str]) -> "AIClient":
+        """Return the first available client from the priority order.
+
+        Raises KeyError if none of the preferred providers are registered.
+        """
+        for provider in order:
+            if self.has_provider(provider):
+                return self.get_client(provider)
+        raise KeyError(f"None of the preferred providers are available: {order}")
+
     @property
     def providers(self) -> list[str]:
         """List of all registered provider names."""

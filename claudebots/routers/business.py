@@ -1533,6 +1533,297 @@ async def _prepare_media_send(
     return send_chat, thread_id, wait_msg, send_bot
 
 
+async def _run_owner_tools(
+    *,
+    message: Message,
+    bot: Bot,
+    panel_bot: Bot | None,
+    panel_chat_id: int | None,
+    ai_registry: AIRegistry,
+    text: str,
+    meters_client: "MetersClient | None",
+    sheets_client: "GoogleSheetsClient | None",
+    expenses_sheet_id: str,
+    insta_downloader: "InstagramDownloader | None",
+    yt_downloader: "YTDownloader | None",
+    social_downloader: "SocialDownloader | None",
+) -> bool:
+    """Handle owner-mode tool requests. Returns True if message was fully handled."""
+    # ── Meter readings (never blocks AI follow-up) ────────────────────────────
+    if meters_client is not None and text.lstrip().lower().startswith("показания"):
+        try:
+            await bot.send_chat_action(
+                chat_id=message.chat.id, action="typing",
+                message_thread_id=message.message_thread_id,
+            )
+        except Exception:
+            pass
+        readings = await extract_meter_readings(text, ai_registry)
+        if readings:
+            results = await meters_client.save_readings(readings)
+            reply = meters_client.format_confirmation(readings, results)
+            try:
+                await bot.send_message(
+                    chat_id=message.chat.id,
+                    text=reply,
+                    message_thread_id=message.message_thread_id,
+                    parse_mode=None,
+                )
+            except Exception as _me:
+                logger.warning("Meters reply failed: %s", _me)
+
+    # ── Expense tracker ───────────────────────────────────────────────────────
+    if (
+        expenses_sheet_id
+        and sheets_client is not None
+        and text
+        and _EXPENSE_KW_RE.search(text)
+        and _AMOUNT_RE.search(text)
+    ):
+        try:
+            await bot.send_chat_action(
+                chat_id=message.chat.id, action="typing",
+                message_thread_id=message.message_thread_id,
+            )
+        except Exception:
+            pass
+        try:
+            _exp_client = ai_registry.get_cheapest_client(["openrouter_gemini", "claude"])
+            _exp_raw = await _exp_client.complete(
+                system=(
+                    "Извлеки расход из сообщения. Верни ТОЛЬКО JSON вида: "
+                    '{"amount": "500", "currency": "UAH", "category": "Еда", "description": "обед в кафе"}. '
+                    "Если валюта не указана — используй UAH. Категория: одно слово или фраза."
+                ),
+                messages=[{"role": "user", "content": text}],
+                max_tokens=120,
+            )
+            _m = _re.search(r"\{[^}]+\}", _exp_raw, _re.DOTALL)
+            if _m:
+                _exp = json.loads(_m.group())
+                from datetime import date as _date
+                _date_str = _date.today().strftime("%Y-%m-%d")
+                _ok = await sheets_client.append_expense(
+                    sheet_id=expenses_sheet_id,
+                    date_str=_date_str,
+                    amount=str(_exp.get("amount", "")),
+                    currency=str(_exp.get("currency", "UAH")),
+                    category=str(_exp.get("category", "")),
+                    description=str(_exp.get("description", text[:80])),
+                )
+                _conf = (
+                    f"✅ Записал расход: {_exp.get('amount')} {_exp.get('currency')} — "
+                    f"{_exp.get('category')}: {_exp.get('description')}"
+                    if _ok else "⚠️ Не удалось записать расход в таблицу."
+                )
+                try:
+                    await bot.send_message(
+                        chat_id=message.chat.id, text=_conf,
+                        message_thread_id=message.message_thread_id, parse_mode=None,
+                    )
+                except Exception:
+                    pass
+                if _ok:
+                    return True
+        except Exception as _exp_err:
+            logger.warning("Expense tracker failed: %s", _exp_err)
+
+    # ── Instagram downloader ──────────────────────────────────────────────────
+    if insta_downloader is not None:
+        _insta_url = _detect_insta_url(text)
+        if _insta_url:
+            _insta_send_chat = message.chat.id
+            _insta_key = f"📸 Instagram:{_insta_send_chat}"
+            _insta_send_chat, _insta_thread_id, _wait_msg, _insta_bot = await _prepare_media_send(
+                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
+                topic_key=_insta_key, topic_name="📸 Instagram",
+                wait_text="⏬ Скачиваю...", chat_action="upload_video",
+            )
+            _media_files = await insta_downloader.download(_insta_url)
+            try:
+                if _wait_msg:
+                    await _insta_bot.delete_message(chat_id=_insta_send_chat, message_id=_wait_msg.message_id)
+            except Exception:
+                pass
+            if not _media_files:
+                _is_story = "/stories/" in _insta_url
+                _insta_err = (
+                    "❌ Сторис не удалось скачать. Для сторис нужна авторизация — "
+                    "установите IG_COOKIES_BROWSER=safari в .env"
+                    if _is_story
+                    else "❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна."
+                )
+                await _insta_bot.send_message(
+                    chat_id=_insta_send_chat,
+                    text=_insta_err,
+                    message_thread_id=_insta_thread_id, parse_mode=None,
+                )
+                return True
+            try:
+                await _send_media_files(_insta_bot, _insta_send_chat, _insta_thread_id, _media_files)
+            except Exception as _e:
+                logger.warning("Instagram send failed: %s", _e)
+                await _insta_bot.send_message(
+                    chat_id=_insta_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
+                    message_thread_id=_insta_thread_id, parse_mode=None,
+                )
+            finally:
+                insta_downloader.cleanup(_media_files)
+            return True
+
+    # ── YouTube summary (резюме / кратко / summary URL) ──────────────────────
+    if yt_downloader is not None:
+        _summary_url = _detect_yt_summary_cmd(text)
+        if _summary_url:
+            try:
+                await bot.send_chat_action(
+                    chat_id=message.chat.id, action="typing",
+                    message_thread_id=message.message_thread_id,
+                )
+            except Exception:
+                pass
+            placeholder_sm = None
+            try:
+                placeholder_sm = await bot.send_message(
+                    chat_id=message.chat.id,
+                    text="📝 Получаю субтитры…",
+                    message_thread_id=message.message_thread_id,
+                    parse_mode=None,
+                )
+            except Exception:
+                pass
+            transcript = await yt_downloader.fetch_transcript(_summary_url)
+            summary_reply: str
+            if not transcript:
+                summary_reply = "⚠️ Субтитры недоступны для этого видео. Попробуй скачать аудио и transcribe вручную."
+            else:
+                try:
+                    sm_client = ai_registry.get_client("openrouter_gemini")
+                    summary_reply = await sm_client.complete(
+                        system="Ты пишешь краткие резюме видео. Структурируй ответ: основная идея, ключевые тезисы (3-5 пунктов), вывод. Русский язык.",
+                        messages=[{"role": "user", "content": f"Субтитры видео:\n{transcript[:8000]}\n\nНапиши краткое резюме."}],
+                        max_tokens=800,
+                    )
+                except Exception as _se:
+                    logger.warning("YT summary AI failed: %s", _se)
+                    summary_reply = f"⚠️ Не удалось сгенерировать резюме: {_se}"
+            try:
+                if placeholder_sm:
+                    await bot.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=placeholder_sm.message_id,
+                        text=summary_reply,
+                        parse_mode=None,
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=message.chat.id, text=summary_reply,
+                        message_thread_id=message.message_thread_id, parse_mode=None,
+                    )
+            except Exception as _pe:
+                logger.debug("Summary reply send failed: %s", _pe)
+            return True
+
+    # ── YouTube audio extraction ──────────────────────────────────────────────
+    if yt_downloader is not None:
+        _yt_url = _detect_yt_url(text)
+        if _yt_url:
+            _yt_send_chat = message.chat.id
+            _yt_key = f"🎵 YouTube:{_yt_send_chat}"
+            _yt_send_chat, _yt_thread_id, _yt_wait_msg, _yt_bot = await _prepare_media_send(
+                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
+                topic_key=_yt_key, topic_name="🎵 YouTube",
+                wait_text="⏬ Скачиваю аудио…", chat_action="upload_document",
+            )
+            _yt_audio: _YTAudioFile | None = None
+            try:
+                _yt_audio = await yt_downloader.download_audio(_yt_url)
+                if _yt_audio is None:
+                    raise RuntimeError("yt_downloader вернул None — возможно видео недоступно")
+                if _yt_wait_msg is not None:
+                    try:
+                        await _yt_bot.delete_message(chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id)
+                    except Exception:
+                        pass
+                _yt_caption = _yt_audio.title[:200] if _yt_audio.title else None
+                _yt_inp = FSInputFile(str(_yt_audio.path))
+                if _yt_audio.send_as_audio:
+                    await _yt_bot.send_audio(
+                        chat_id=_yt_send_chat, audio=_yt_inp,
+                        title=_yt_audio.title or None, duration=_yt_audio.duration_s or None,
+                        caption=_yt_caption, message_thread_id=_yt_thread_id, parse_mode=None,
+                    )
+                else:
+                    await _yt_bot.send_document(
+                        chat_id=_yt_send_chat, document=_yt_inp,
+                        caption=_yt_caption, message_thread_id=_yt_thread_id, parse_mode=None,
+                    )
+            except Exception as _e:
+                logger.warning("YouTube send failed: %s", _e)
+                try:
+                    if _yt_wait_msg is not None:
+                        await _yt_bot.edit_message_text(
+                            chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id,
+                            text=f"⚠️ Не удалось скачать аудио: {_e}", parse_mode=None,
+                        )
+                    else:
+                        await _yt_bot.send_message(
+                            chat_id=_yt_send_chat, text=f"⚠️ Не удалось скачать аудио: {_e}",
+                            message_thread_id=_yt_thread_id, parse_mode=None,
+                        )
+                except Exception:
+                    pass
+            finally:
+                yt_downloader.cleanup(_yt_audio)
+            return True
+
+    # ── TikTok / X/Twitter downloader ────────────────────────────────────────
+    if social_downloader is not None:
+        _social = _detect_social_platform(text)
+        if _social:
+            _social_url, _social_topic_name = _social
+            _social_send_chat = message.chat.id
+            _social_key = f"{_social_topic_name}:{_social_send_chat}"
+            _social_send_chat, _social_thread_id, _social_wait_msg, _social_bot = await _prepare_media_send(
+                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
+                topic_key=_social_key, topic_name=_social_topic_name,
+                wait_text="⏬ Скачиваю...", chat_action="upload_video",
+            )
+            _social_files = await social_downloader.download(_social_url)
+            try:
+                if _social_wait_msg:
+                    await _social_bot.delete_message(chat_id=_social_send_chat, message_id=_social_wait_msg.message_id)
+            except Exception:
+                pass
+            if not _social_files:
+                _is_threads = "threads." in _social_url
+                _social_err = (
+                    "❌ Threads не удалось скачать. Нужна авторизация — "
+                    "установите IG_COOKIES_BROWSER=safari в .env"
+                    if _is_threads
+                    else "❌ Не удалось скачать. Проверьте, что пост публичный."
+                )
+                await _social_bot.send_message(
+                    chat_id=_social_send_chat,
+                    text=_social_err,
+                    message_thread_id=_social_thread_id, parse_mode=None,
+                )
+                return True
+            try:
+                await _send_media_files(_social_bot, _social_send_chat, _social_thread_id, _social_files)
+            except Exception as _e:
+                logger.warning("Social send failed: %s", _e)
+                await _social_bot.send_message(
+                    chat_id=_social_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
+                    message_thread_id=_social_thread_id, parse_mode=None,
+                )
+            finally:
+                social_downloader.cleanup(_social_files)
+            return True
+
+    return False
+
+
 async def handle_private_message(
     *,
     message: Message,
@@ -1626,293 +1917,15 @@ async def handle_private_message(
         _persist_business_state()
         logger.info("Recorded admin supergroup chat_id=%d", _admin_supergroup_id)
 
-    # ── Meter readings: triggered by prefix «Показания» ────────────────────
-    if is_owner_mode and meters_client is not None and text.lstrip().lower().startswith("показания"):
-        try:
-            await bot.send_chat_action(
-                chat_id=message.chat.id, action="typing",
-                message_thread_id=message.message_thread_id,
-            )
-        except Exception:
-            pass
-        readings = await extract_meter_readings(text, ai_registry)
-        if readings:
-            results = await meters_client.save_readings(readings)
-            reply = meters_client.format_confirmation(readings, results)
-            try:
-                await bot.send_message(
-                    chat_id=message.chat.id,
-                    text=reply,
-                    message_thread_id=message.message_thread_id,
-                    parse_mode=None,
-                )
-            except Exception as _me:
-                logger.warning("Meters reply failed: %s", _me)
-            # Still let the conversation continue normally (no early return)
-            # so the AI can also acknowledge/comment if needed
-
-    # ── Expense tracker ──────────────────────────────────────────────────────
-    if (
-        is_owner_mode
-        and expenses_sheet_id
-        and sheets_client is not None
-        and text
-        and _EXPENSE_KW_RE.search(text)
-        and _AMOUNT_RE.search(text)
+    if is_owner_mode and await _run_owner_tools(
+        message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
+        ai_registry=ai_registry, text=text,
+        meters_client=meters_client, sheets_client=sheets_client,
+        expenses_sheet_id=expenses_sheet_id,
+        insta_downloader=insta_downloader, yt_downloader=yt_downloader,
+        social_downloader=social_downloader,
     ):
-        try:
-            await bot.send_chat_action(
-                chat_id=message.chat.id, action="typing",
-                message_thread_id=message.message_thread_id,
-            )
-        except Exception:
-            pass
-        try:
-            _exp_client = ai_registry.get_cheapest_client(["openrouter_gemini", "claude"])
-            _exp_raw = await _exp_client.complete(
-                system=(
-                    "Извлеки расход из сообщения. Верни ТОЛЬКО JSON вида: "
-                    '{"amount": "500", "currency": "UAH", "category": "Еда", "description": "обед в кафе"}. '
-                    "Если валюта не указана — используй UAH. Категория: одно слово или фраза."
-                ),
-                messages=[{"role": "user", "content": text}],
-                max_tokens=120,
-            )
-            _m = _re.search(r"\{[^}]+\}", _exp_raw, _re.DOTALL)
-            if _m:
-                _exp = json.loads(_m.group())
-                from datetime import date as _date
-                _date_str = _date.today().strftime("%Y-%m-%d")
-                _ok = await sheets_client.append_expense(
-                    sheet_id=expenses_sheet_id,
-                    date_str=_date_str,
-                    amount=str(_exp.get("amount", "")),
-                    currency=str(_exp.get("currency", "UAH")),
-                    category=str(_exp.get("category", "")),
-                    description=str(_exp.get("description", text[:80])),
-                )
-                _conf = (
-                    f"✅ Записал расход: {_exp.get('amount')} {_exp.get('currency')} — "
-                    f"{_exp.get('category')}: {_exp.get('description')}"
-                    if _ok else "⚠️ Не удалось записать расход в таблицу."
-                )
-                try:
-                    await bot.send_message(
-                        chat_id=message.chat.id, text=_conf,
-                        message_thread_id=message.message_thread_id, parse_mode=None,
-                    )
-                except Exception:
-                    pass
-                if _ok:
-                    return
-        except Exception as _exp_err:
-            logger.warning("Expense tracker failed: %s", _exp_err)
-
-    # ── Instagram downloader ─────────────────────────────────────────────────
-    if is_owner_mode and insta_downloader is not None:
-        _insta_url = _detect_insta_url(text)
-        if _insta_url:
-            _insta_send_chat = message.chat.id
-            _insta_key = f"📸 Instagram:{_insta_send_chat}"
-            _insta_send_chat, _insta_thread_id, _wait_msg, _insta_bot = await _prepare_media_send(
-                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
-                topic_key=_insta_key, topic_name="📸 Instagram",
-                wait_text="⏬ Скачиваю...", chat_action="upload_video",
-            )
-
-            _media_files = await insta_downloader.download(_insta_url)
-            try:
-                if _wait_msg:
-                    await _insta_bot.delete_message(chat_id=_insta_send_chat, message_id=_wait_msg.message_id)
-            except Exception:
-                pass
-
-            if not _media_files:
-                _is_story = "/stories/" in _insta_url
-                _insta_err = (
-                    "❌ Сторис не удалось скачать. Для сторис нужна авторизация — "
-                    "установите IG_COOKIES_BROWSER=safari в .env"
-                    if _is_story
-                    else "❌ Не удалось скачать. Возможно, аккаунт закрытый или ссылка недействительна."
-                )
-                await _insta_bot.send_message(
-                    chat_id=_insta_send_chat,
-                    text=_insta_err,
-                    message_thread_id=_insta_thread_id, parse_mode=None,
-                )
-                return
-
-            try:
-                await _send_media_files(_insta_bot, _insta_send_chat, _insta_thread_id, _media_files)
-            except Exception as _e:
-                logger.warning("Instagram send failed: %s", _e)
-                await _insta_bot.send_message(
-                    chat_id=_insta_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
-                    message_thread_id=_insta_thread_id, parse_mode=None,
-                )
-            finally:
-                insta_downloader.cleanup(_media_files)
-            return
-
-    # ── YouTube summary (резюме / кратко / summary URL) ──────────────────────
-    if is_owner_mode and yt_downloader is not None:
-        _summary_url = _detect_yt_summary_cmd(text)
-        if _summary_url:
-            try:
-                await bot.send_chat_action(
-                    chat_id=message.chat.id, action="typing",
-                    message_thread_id=message.message_thread_id,
-                )
-            except Exception:
-                pass
-            placeholder_sm = None
-            try:
-                placeholder_sm = await bot.send_message(
-                    chat_id=message.chat.id,
-                    text="📝 Получаю субтитры…",
-                    message_thread_id=message.message_thread_id,
-                    parse_mode=None,
-                )
-            except Exception:
-                pass
-
-            transcript = await yt_downloader.fetch_transcript(_summary_url)
-            summary_reply: str
-            if not transcript:
-                summary_reply = "⚠️ Субтитры недоступны для этого видео. Попробуй скачать аудио и transcribe вручную."
-            else:
-                try:
-                    sm_client = ai_registry.get_client("openrouter_gemini")
-                    summary_reply = await sm_client.complete(
-                        system="Ты пишешь краткие резюме видео. Структурируй ответ: основная идея, ключевые тезисы (3-5 пунктов), вывод. Русский язык.",
-                        messages=[{"role": "user", "content": f"Субтитры видео:\n{transcript[:8000]}\n\nНапиши краткое резюме."}],
-                        max_tokens=800,
-                    )
-                except Exception as _se:
-                    logger.warning("YT summary AI failed: %s", _se)
-                    summary_reply = f"⚠️ Не удалось сгенерировать резюме: {_se}"
-
-            try:
-                if placeholder_sm:
-                    await bot.edit_message_text(
-                        chat_id=message.chat.id,
-                        message_id=placeholder_sm.message_id,
-                        text=summary_reply,
-                        parse_mode=None,
-                    )
-                else:
-                    await bot.send_message(
-                        chat_id=message.chat.id, text=summary_reply,
-                        message_thread_id=message.message_thread_id, parse_mode=None,
-                    )
-            except Exception as _pe:
-                logger.debug("Summary reply send failed: %s", _pe)
-            return
-
-    # ── YouTube audio extraction ──────────────────────────────────────────────
-    if is_owner_mode and yt_downloader is not None:
-        _yt_url = _detect_yt_url(text)
-        if _yt_url:
-            _yt_send_chat = message.chat.id
-            _yt_key = f"🎵 YouTube:{_yt_send_chat}"
-            _yt_send_chat, _yt_thread_id, _yt_wait_msg, _yt_bot = await _prepare_media_send(
-                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
-                topic_key=_yt_key, topic_name="🎵 YouTube",
-                wait_text="⏬ Скачиваю аудио…", chat_action="upload_document",
-            )
-
-            _yt_audio: _YTAudioFile | None = None
-            try:
-                _yt_audio = await yt_downloader.download_audio(_yt_url)
-                if _yt_audio is None:
-                    raise RuntimeError("yt_downloader вернул None — возможно видео недоступно")
-
-                if _yt_wait_msg is not None:
-                    try:
-                        await _yt_bot.delete_message(chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id)
-                    except Exception:
-                        pass
-
-                _yt_caption = _yt_audio.title[:200] if _yt_audio.title else None
-                _yt_inp = FSInputFile(str(_yt_audio.path))
-
-                if _yt_audio.send_as_audio:
-                    await _yt_bot.send_audio(
-                        chat_id=_yt_send_chat, audio=_yt_inp,
-                        title=_yt_audio.title or None, duration=_yt_audio.duration_s or None,
-                        caption=_yt_caption, message_thread_id=_yt_thread_id, parse_mode=None,
-                    )
-                else:
-                    await _yt_bot.send_document(
-                        chat_id=_yt_send_chat, document=_yt_inp,
-                        caption=_yt_caption, message_thread_id=_yt_thread_id, parse_mode=None,
-                    )
-
-            except Exception as _e:
-                logger.warning("YouTube send failed: %s", _e)
-                try:
-                    if _yt_wait_msg is not None:
-                        await _yt_bot.edit_message_text(
-                            chat_id=_yt_send_chat, message_id=_yt_wait_msg.message_id,
-                            text=f"⚠️ Не удалось скачать аудио: {_e}", parse_mode=None,
-                        )
-                    else:
-                        await _yt_bot.send_message(
-                            chat_id=_yt_send_chat, text=f"⚠️ Не удалось скачать аудио: {_e}",
-                            message_thread_id=_yt_thread_id, parse_mode=None,
-                        )
-                except Exception:
-                    pass
-            finally:
-                yt_downloader.cleanup(_yt_audio)
-            return
-
-    # ── TikTok / X/Twitter downloader ────────────────────────────────────────
-    if is_owner_mode and social_downloader is not None:
-        _social = _detect_social_platform(text)
-        if _social:
-            _social_url, _social_topic_name = _social
-            _social_send_chat = message.chat.id
-            _social_key = f"{_social_topic_name}:{_social_send_chat}"
-            _social_send_chat, _social_thread_id, _social_wait_msg, _social_bot = await _prepare_media_send(
-                message=message, bot=bot, panel_bot=panel_bot, panel_chat_id=panel_chat_id,
-                topic_key=_social_key, topic_name=_social_topic_name,
-                wait_text="⏬ Скачиваю...", chat_action="upload_video",
-            )
-
-            _social_files = await social_downloader.download(_social_url)
-            try:
-                if _social_wait_msg:
-                    await _social_bot.delete_message(chat_id=_social_send_chat, message_id=_social_wait_msg.message_id)
-            except Exception:
-                pass
-
-            if not _social_files:
-                _is_threads = "threads." in _social_url
-                _social_err = (
-                    "❌ Threads не удалось скачать. Нужна авторизация — "
-                    "установите IG_COOKIES_BROWSER=safari в .env"
-                    if _is_threads
-                    else "❌ Не удалось скачать. Проверьте, что пост публичный."
-                )
-                await _social_bot.send_message(
-                    chat_id=_social_send_chat,
-                    text=_social_err,
-                    message_thread_id=_social_thread_id, parse_mode=None,
-                )
-                return
-
-            try:
-                await _send_media_files(_social_bot, _social_send_chat, _social_thread_id, _social_files)
-            except Exception as _e:
-                logger.warning("Social send failed: %s", _e)
-                await _social_bot.send_message(
-                    chat_id=_social_send_chat, text=f"⚠️ Скачал, но не смог отправить: {_e}",
-                    message_thread_id=_social_thread_id, parse_mode=None,
-                )
-            finally:
-                social_downloader.cleanup(_social_files)
-            return
+        return
 
     # For supergroup: classify every owner message and ensure it lands in the right
     # category topic. Telegram Forums auto-create topics with the message text as the
