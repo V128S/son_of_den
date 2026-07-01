@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from claudebots.core import state as _state
+from claudebots.core.task_utils import task_error_callback
 
 if TYPE_CHECKING:
     from claudebots.core.ai_registry import AIRegistry
@@ -274,11 +275,7 @@ class FeedMonitor:
             search_client=self._search_client,
         )
         _t = asyncio.create_task(runner.run_round(topic))
-        _t.add_done_callback(
-            lambda t: logger.warning("Feed-triggered round raised: %s", t.exception())
-            if not t.cancelled() and t.exception()
-            else None
-        )
+        _t.add_done_callback(task_error_callback("Feed-triggered round", logger))
 
         feed_seen.append(best_url)
         if len(feed_seen) > _FEED_SEEN_MAX:
@@ -411,7 +408,7 @@ _ALLOWED_TAGS_RE = re.compile(
 )
 
 
-def _sanitize_html(text: str) -> str:
+def sanitize_html(text: str) -> str:
     """Escape stray & < > while keeping allowed Telegram HTML tags (<b>, <i>).
 
     Also balances unclosed tags so Telegram never rejects the message.
@@ -494,7 +491,7 @@ async def build_daily_digest(
             messages=[{"role": "user", "content": f"Посты канала за последние 24 часа:\n\n{block}"}],
             max_tokens=2200,
         )
-        digest = _sanitize_html(digest or "")
+        digest = sanitize_html(digest or "")
         return digest or None
     except Exception as e:
         logger.warning("Digest: AI summarisation failed: %s", e)
@@ -595,11 +592,7 @@ def start_digest_scheduler(
             user_timezone=user_timezone,
         )
     )
-    task.add_done_callback(
-        lambda t: logger.warning("Digest scheduler raised: %s", t.exception())
-        if not t.cancelled() and t.exception()
-        else None
-    )
+    task.add_done_callback(task_error_callback("Digest scheduler", logger))
     logger.info("Daily digest scheduler started (time=%s, channels=%s)", digest_time, channels)
     return task
 
@@ -645,11 +638,7 @@ def start_feed_monitor(
         search_client=search_client,
     )
     task = asyncio.create_task(_feed_loop(monitor, check_interval_seconds))
-    task.add_done_callback(
-        lambda t: logger.warning("Feed monitor task raised: %s", t.exception())
-        if not t.cancelled() and t.exception()
-        else None
-    )
+    task.add_done_callback(task_error_callback("Feed monitor task", logger))
     logger.info(
         "Feed monitor started: channels=%s, interval=%.0f min, max_per_day=%d",
         channels,

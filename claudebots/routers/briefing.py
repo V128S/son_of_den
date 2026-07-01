@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from claudebots.core.feed_monitor import _sanitize_html, fetch_channel_entries_raw
+from claudebots.core.feed_monitor import sanitize_html, fetch_channel_entries_raw
 
 logger = logging.getLogger(__name__)
 
@@ -66,19 +66,23 @@ async def _build_briefing_messages(
         return []
 
     # ── Fetch channel posts (last 24 h) ───────────────────────────────────────
+    # Cap per channel so active news channels don't crowd out tech channels.
     since = datetime.now(UTC).timestamp() - _SECONDS_PER_DAY
-    snippets: list[str] = []
+    channel_blocks: list[str] = []
     for ch in channels:
         try:
             entries = await fetch_channel_entries_raw(ch, since)
         except Exception as e:
             logger.debug("Briefing: fetch failed for %s: %s", ch, e)
             continue
-        for _, title, text, _ in entries[:25]:
-            snippet = (text or title)[:400].replace("\n", " ").strip()
+        ch_snippets: list[str] = []
+        for _, title, text, _ in entries[:5]:
+            snippet = (text or title)[:300].replace("\n", " ").strip()
             if snippet:
-                snippets.append(f"• {snippet}")
-    channel_block = "\n".join(snippets)[:5000]
+                ch_snippets.append(f"• {snippet}")
+        if ch_snippets:
+            channel_blocks.append(f"[{ch}]\n" + "\n".join(ch_snippets))
+    channel_block = "\n\n".join(channel_blocks)[:10000]
 
     # ── Exa enrichment (optional) ─────────────────────────────────────────────
     politics_exa = ""
@@ -92,7 +96,7 @@ async def _build_briefing_messages(
             logger.debug("Briefing: Exa politics search failed: %s", e)
         try:
             r2 = await search_client.search(
-                "технологии искусственный интеллект криптовалюта", num_results=3
+                "технологии искусственный интеллект криптовалюта стартапы", num_results=6
             )
             if r2:
                 tech_exa = search_client.format_results(r2)
@@ -142,7 +146,7 @@ async def _build_briefing_messages(
         content = channel_block
         if topic_exa:
             content = content + "\n\n" + topic_exa
-        content = content[:7000]
+        content = content[:12000]
         if not content.strip():
             continue
         try:
@@ -151,7 +155,7 @@ async def _build_briefing_messages(
                 messages=[{"role": "user", "content": content_prefix + content}],
                 max_tokens=1800,
             )
-            ai_text = _sanitize_html(ai_text or "").strip()
+            ai_text = sanitize_html(ai_text or "").strip()
             if not ai_text:
                 continue
             full = header_prefix + ai_text
@@ -228,9 +232,6 @@ def start_briefing_scheduler(
             search_client=search_client,
         )
     )
-    task.add_done_callback(
-        lambda t: logger.warning("Briefing loop raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    task.add_done_callback(task_error_callback("Briefing loop", logger))
     logger.info("Morning briefing scheduler started (time=%s %s)", briefing_time, timezone_str)
     return task

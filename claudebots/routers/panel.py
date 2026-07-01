@@ -1176,10 +1176,7 @@ def start_revival_scheduler(
     task: asyncio.Task[None] = asyncio.create_task(
         _revival_loop(bots, personas, ai_registry, conv, alerts, panel_chat_id, interval_seconds)
     )
-    task.add_done_callback(
-        lambda t: logger.warning("Revival loop raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    task.add_done_callback(task_error_callback("Revival loop", logger))
     logger.info(
         "Revival scheduler started (interval=%.0f min ± %.0f min)",
         interval_seconds / 60,
@@ -1261,10 +1258,7 @@ def start_reminder_checker(
     task: asyncio.Task[None] = asyncio.create_task(
         _reminder_loop(bots, panel_chat_id, check_interval_seconds)
     )
-    task.add_done_callback(
-        lambda t: logger.warning("Reminder loop raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    task.add_done_callback(task_error_callback("Reminder loop", logger))
     logger.info(
         "Reminder checker started (check_interval=%.0f min)", check_interval_seconds / 60
     )
@@ -1438,10 +1432,7 @@ async def _on_panel_message(
             search_client=search_client,
         )
         task = asyncio.create_task(runner.run_round(message.text or message.caption or ""))
-        task.add_done_callback(
-            lambda t: logger.warning("Panel round raised: %s", t.exception())
-            if not t.cancelled() and t.exception() else None
-        )
+        task.add_done_callback(task_error_callback("Panel round", logger))
         _active_round = task
 
 
@@ -1489,10 +1480,7 @@ def schedule_panel_round(
     _scheduled_task = asyncio.create_task(
         _run_scheduled_round(delay, bots, personas, ai_registry, conv, alerts, chat_id, topic, thread_id, search_client)
     )
-    _scheduled_task.add_done_callback(
-        lambda t: logger.warning("Scheduled round raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    _scheduled_task.add_done_callback(task_error_callback("Scheduled round", logger))
     logger.info("Panel round scheduled in %.0f s (topic=%r)", delay, topic[:50])
 
 
@@ -1647,8 +1635,5 @@ async def _on_panel_rate(
         )
         deep_topic = f"Углубляем: {topic}" if topic else "Продолжаем тему"
         t = asyncio.create_task(runner.run_round(deep_topic))
-        t.add_done_callback(
-            lambda tt: logger.warning("Deepen round raised: %s", tt.exception())
-            if not tt.cancelled() and tt.exception() else None
-        )
+        t.add_done_callback(task_error_callback("Deepen round", logger))
         logger.info("Deepen round started for topic=%r", topic[:50])

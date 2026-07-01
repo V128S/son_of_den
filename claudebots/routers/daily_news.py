@@ -219,10 +219,7 @@ def start_daily_news_panel(
             search_client=search_client,
         )
     )
-    task.add_done_callback(
-        lambda t: logger.warning("Daily news panel task raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    task.add_done_callback(task_error_callback("Daily news panel task", logger))
     logger.info(
         "Daily news panel started: time=%s %s, interests=%r",
         panel_time,

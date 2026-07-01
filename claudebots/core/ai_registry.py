@@ -10,6 +10,12 @@ from typing import Any, Protocol, TypedDict
 
 logger = logging.getLogger(__name__)
 
+# Approximate pricing per 1M tokens (Sonnet 4.6 / mixed-provider best-effort estimate).
+# Update these when Anthropic changes pricing.
+TOKEN_PRICE_INPUT_PER_M = 3.0
+TOKEN_PRICE_OUTPUT_PER_M = 15.0
+TOKEN_PRICE_CACHE_READ_PER_M = 0.30
+
 
 class Usage(TypedDict):
     input: int

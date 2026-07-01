@@ -86,10 +86,12 @@ class SocialDownloader:
         timeout: float = 90.0,
         cookies_browser: str = "",
         cookies_file: str = "",
+        threads_cookies_file: str = "",
     ) -> None:
         self.timeout = timeout
         self.cookies_browser = cookies_browser
         self.cookies_file = cookies_file
+        self.threads_cookies_file = threads_cookies_file
         # Reuse InstagramDownloader's re-encode + classify helpers
         self._helper = InstagramDownloader.__new__(InstagramDownloader)
 
@@ -376,23 +378,29 @@ class SocialDownloader:
         return [MediaFile(path=path, media_type="video")]
 
     def _load_cookies(self) -> dict[str, str]:
-        """Load Meta/Threads cookies from file (preferred) or browser."""
+        """Load Meta/Threads cookies from file (preferred) or browser.
+
+        Priority: threads_cookies_file > ig_cookies_file > browser.
+        """
         cookies: dict[str, str] = {}
 
+        # Threads-specific cookies file takes top priority
+        cookie_path = self.threads_cookies_file or self.cookies_file
+
         # Cookies file takes precedence — avoids macOS TCC restrictions on browser keychain
-        if self.cookies_file:
+        if cookie_path:
             try:
                 import http.cookiejar
-                jar = http.cookiejar.MozillaCookieJar(self.cookies_file)
+                jar = http.cookiejar.MozillaCookieJar(cookie_path)
                 jar.load(ignore_discard=True, ignore_expires=True)
                 for c in jar:
                     domain = getattr(c, "domain", "") or ""
                     if any(d in domain for d in ("threads", "instagram", "facebook")):
                         cookies[c.name] = c.value
-                logger.debug("Threads: loaded %d cookies from %s", len(cookies), self.cookies_file)
+                logger.debug("Threads: loaded %d cookies from %s", len(cookies), cookie_path)
                 return cookies
             except Exception as e:
-                logger.warning("Threads: failed to load cookies file %s — %s", self.cookies_file, e)
+                logger.warning("Threads: failed to load cookies file %s — %s", cookie_path, e)
 
         # Fallback: extract from browser via yt-dlp (may fail if TCC blocks keychain access)
         if self.cookies_browser:

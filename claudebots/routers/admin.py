@@ -5,7 +5,12 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from claudebots.core.ai_registry import AIRegistry
+from claudebots.core.ai_registry import (
+    AIRegistry,
+    TOKEN_PRICE_CACHE_READ_PER_M,
+    TOKEN_PRICE_INPUT_PER_M,
+    TOKEN_PRICE_OUTPUT_PER_M,
+)
 from claudebots.core.config import Settings
 from claudebots.core.conversation import ConversationStore
 from claudebots.core.personas import PersonaRegistry, load_personas
@@ -13,6 +18,13 @@ from claudebots.core.personas import PersonaRegistry, load_personas
 logger = logging.getLogger(__name__)
 
 admin_router = Router(name="admin")
+
+
+async def _is_admin(message: Message, settings: Settings) -> bool:
+    return bool(message.from_user and message.from_user.id == settings.admin_user_id)
+
+
+admin_router.message.filter(_is_admin)
 
 
 @dataclass
@@ -76,8 +88,8 @@ async def handle_cost(message: Message, ai_registry: AIRegistry, settings: Setti
         lines.append("  (нет использования сегодня)")
     else:
         lines.append(f"\n  День: in={daily_total['input']}  out={daily_total['output']}  cache={daily_total['cache_read']}")
-        d_in = daily_total["input"] / 1_000_000 * 3.0
-        d_out = daily_total["output"] / 1_000_000 * 15.0
+        d_in = daily_total["input"] / 1_000_000 * TOKEN_PRICE_INPUT_PER_M
+        d_out = daily_total["output"] / 1_000_000 * TOKEN_PRICE_OUTPUT_PER_M
         lines.append(f"≈ ${d_in + d_out:.4f} за день")
 
     # ── All-time usage ─────────────────────────────────────────────────────────
@@ -90,9 +102,9 @@ async def handle_cost(message: Message, ai_registry: AIRegistry, settings: Setti
         lines.append(f"  {name}: in={u['input']}  out={u['output']}  cache={u['cache_read']}")
 
     lines.append(f"\n  ИТОГО: in={total['input']}  out={total['output']}  cache={total['cache_read']}")
-    in_cost = total["input"] / 1_000_000 * 3.0
-    out_cost = total["output"] / 1_000_000 * 15.0
-    cache_savings = total["cache_read"] / 1_000_000 * (3.0 - 0.30)
+    in_cost = total["input"] / 1_000_000 * TOKEN_PRICE_INPUT_PER_M
+    out_cost = total["output"] / 1_000_000 * TOKEN_PRICE_OUTPUT_PER_M
+    cache_savings = total["cache_read"] / 1_000_000 * (TOKEN_PRICE_INPUT_PER_M - TOKEN_PRICE_CACHE_READ_PER_M)
     lines.append(f"≈ ${in_cost + out_cost:.4f} всего (кэш сэкономил ≈ ${cache_savings:.4f})")
 
     await message.answer("\n".join(lines))
@@ -100,8 +112,6 @@ async def handle_cost(message: Message, ai_registry: AIRegistry, settings: Setti
 
 @admin_router.message(Command("contacts"))
 async def _contacts(message: Message, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.business import get_contacts_summary  # noqa: PLC0415
     text = get_contacts_summary()
     await message.answer(text, parse_mode=None)
@@ -109,8 +119,6 @@ async def _contacts(message: Message, settings: Settings) -> None:
 
 @admin_router.message(Command("stats"))
 async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.business import _contact_data, _contact_today  # noqa: PLC0415
     from claudebots.routers.panel import (  # noqa: PLC0415
         _panel_memories,
@@ -147,8 +155,6 @@ async def _stats(message: Message, ai_registry: AIRegistry, settings: Settings) 
 
 @admin_router.message(Command("panelfind"))
 async def _panelfind(message: Message, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.panel import _panel_memories  # noqa: PLC0415
 
     query = (message.text or "").removeprefix("/panelfind").strip().lower()
@@ -175,8 +181,6 @@ async def _panelfind(message: Message, settings: Settings) -> None:
 
 @admin_router.message(Command("panelstatus"))
 async def _panelstatus(message: Message, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.panel import get_panel_status  # noqa: PLC0415
     s = get_panel_status()
     scheduled = s["scheduled"]
@@ -195,8 +199,6 @@ async def _panelstatus(message: Message, settings: Settings) -> None:
 
 @admin_router.message(Command("personas"))
 async def _personas(message: Message, personas, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.panel import get_panel_status  # noqa: PLC0415
     mem = get_panel_status()["persona_memories"]
     all_p = list(personas.panel_speakers) + ([personas.moderator] if personas.moderator else [])
@@ -224,8 +226,6 @@ async def _panelschedule(
     settings: Settings,
     search_client=None,
 ) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
 
     text = (message.text or "").removeprefix("/panelschedule").strip()
     parts = text.split(None, 1)
@@ -292,8 +292,6 @@ async def _panelschedule(
 
 @admin_router.message(Command("panelcancel"))
 async def _panelcancel(message: Message, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.panel import (  # noqa: PLC0415
         cancel_scheduled_panel,
         get_scheduled_panel,
@@ -308,8 +306,6 @@ async def _panelcancel(message: Message, settings: Settings) -> None:
 
 @admin_router.message(Command("panelbest"))
 async def _panelbest(message: Message, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.panel import get_rated_rounds  # noqa: PLC0415
     rounds = get_rated_rounds("good", limit=7)
     if not rounds:
@@ -327,8 +323,6 @@ async def _panelbest(message: Message, settings: Settings) -> None:
 
 @admin_router.message(Command("panelworst"))
 async def _panelworst(message: Message, settings: Settings) -> None:
-    if message.from_user is None or message.from_user.id != settings.admin_user_id:
-        return
     from claudebots.routers.panel import get_rated_rounds  # noqa: PLC0415
     rounds = get_rated_rounds("bad", limit=5)
     if not rounds:

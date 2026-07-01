@@ -150,3 +150,8 @@ class Settings(BaseSettings):
     # Export with browser extension "Get cookies.txt LOCALLY" → select threads.net + instagram.com.
     ig_cookies_file: str = ""
 
+    # Path to a separate Netscape-format cookies.txt for Threads auth.
+    # Takes precedence over ig_cookies_file for Threads downloads when set.
+    # Export with "Get cookies.txt LOCALLY" → select threads.net / threads.com.
+    threads_cookies_file: str = ""
+

@@ -7,7 +7,7 @@ import pytest
 from claudebots.core.feed_monitor import (
     FeedMonitor,
     _parse_rss,
-    _sanitize_html,
+    sanitize_html,
     _strip_html,
     build_daily_digest,
 )
@@ -399,9 +399,9 @@ async def test_empty_channels_no_http(tmp_path):
 # build_daily_digest — one editorial post, prefers openmodel
 # ---------------------------------------------------------------------------
 
-def test_sanitize_html_keeps_allowed_tags():
+def testsanitize_html_keeps_allowed_tags():
     raw = "<b>Заголовок</b>\nТекст <i>курсив</i> и <br> & стрелка > 5."
-    out = _sanitize_html(raw)
+    out = sanitize_html(raw)
     assert "<b>Заголовок</b>" in out
     assert "<i>курсив</i>" in out
     assert "&amp;" in out

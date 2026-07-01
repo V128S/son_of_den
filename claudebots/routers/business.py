@@ -12,8 +12,11 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, F, Router
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputMediaVideo,
     Message,
 )
 
@@ -465,10 +468,7 @@ async def _on_panel_command(
     )
     import asyncio as _asyncio
     _task = _asyncio.create_task(runner.run_round(topic))
-    _task.add_done_callback(
-        lambda t: logger.warning("Panel round task raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    _task.add_done_callback(task_error_callback("Panel round task", logger))
 
 
 # /help — dedicated handler, MUST be registered before the catch-all
@@ -731,10 +731,7 @@ async def _on_panel_ask(
     )
     full_topic = f"Вопрос от контакта {contact_name}: {question}"
     task = asyncio.create_task(runner.run_round(full_topic))
-    task.add_done_callback(
-        lambda t: logger.warning("Panel ask round raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    task.add_done_callback(task_error_callback("Panel ask round", logger))
     try:
         await callback.message.answer(  # type: ignore[union-attr]
             f"🎯 Запускаю панель с вопросом от {contact_name}…",
@@ -1419,10 +1416,7 @@ async def _prepare_media_send(
                 thread_id = cached
                 if auto_topic and auto_topic != cached:
                     _t = _aio.create_task(_close_topic_async(send_bot, send_chat, auto_topic))
-                    _t.add_done_callback(
-                        lambda t: logger.warning("close auto-topic raised: %s", t.exception())
-                        if not t.cancelled() and t.exception() else None
-                    )
+                    _t.add_done_callback(task_error_callback("close auto-topic", logger))
             else:
                 # Try to create a fresh named topic
                 try:
@@ -1434,10 +1428,7 @@ async def _prepare_media_send(
                     # Close the auto-created URL topic now that we have a proper one
                     if auto_topic and auto_topic != thread_id:
                         _t = _aio.create_task(_close_topic_async(send_bot, send_chat, auto_topic))
-                        _t.add_done_callback(
-                            lambda t: logger.warning("close auto-topic raised: %s", t.exception())
-                            if not t.cancelled() and t.exception() else None
-                        )
+                        _t.add_done_callback(task_error_callback("close auto-topic", logger))
                 except Exception as te:
                     # create_forum_topic not supported here — rename the auto-created topic instead
                     logger.warning("create %s topic failed: %s — using rename fallback", topic_name, te)
@@ -1446,10 +1437,7 @@ async def _prepare_media_send(
                         _admin_topics[topic_key] = thread_id
                         _persist_business_state()
                         _t = _aio.create_task(_rename_topic_async(send_bot, send_chat, thread_id, topic_name))
-                        _t.add_done_callback(
-                            lambda t: logger.warning("rename fallback raised: %s", t.exception())
-                            if not t.cancelled() and t.exception() else None
-                        )
+                        _t.add_done_callback(task_error_callback("rename fallback", logger))
                     else:
                         send_chat = message.chat.id
                         thread_id = None
@@ -1698,7 +1686,6 @@ async def handle_private_message(
                 )
                 return
 
-            from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
             try:
                 if len(_media_files) == 1:
                     _f = _media_files[0]
@@ -1810,8 +1797,7 @@ async def handle_private_message(
                         pass
 
                 _yt_caption = _yt_audio.title[:200] if _yt_audio.title else None
-                from aiogram.types import FSInputFile as _FSInputFile
-                _yt_inp = _FSInputFile(str(_yt_audio.path))
+                _yt_inp = FSInputFile(str(_yt_audio.path))
 
                 if _yt_audio.send_as_audio:
                     await _yt_bot.send_audio(
@@ -1879,7 +1865,6 @@ async def handle_private_message(
                 )
                 return
 
-            from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
             try:
                 if len(_social_files) == 1:
                     _sf = _social_files[0]
@@ -1934,20 +1919,14 @@ async def handle_private_message(
             logger.info("Owner: routing %r → topic %d (closing %d)", category, existing_tid, thread_id)
             # Close the question-text topic after we respond in the correct one
             _t = _aio.create_task(_close_topic_async(bot, message.chat.id, thread_id))
-            _t.add_done_callback(
-                lambda t: logger.warning("close_topic task raised: %s", t.exception())
-                if not t.cancelled() and t.exception() else None
-            )
+            _t.add_done_callback(task_error_callback("close_topic task", logger))
         else:
             # No existing category topic — respond here and rename this topic
             target_thread_id = thread_id
             logger.info("Owner: responding in %d, will rename → %r", thread_id, category)
             # Rename happens AFTER the response so Denis sees the answer first
             _t = _aio.create_task(_rename_topic_async(bot, message.chat.id, thread_id, category))
-            _t.add_done_callback(
-                lambda t: logger.warning("rename_topic task raised: %s", t.exception())
-                if not t.cancelled() and t.exception() else None
-            )
+            _t.add_done_callback(task_error_callback("rename_topic task", logger))
 
     if is_owner_mode:
         # Build owner system prompt — always use OWNER_SYSTEM_PROMPT as base
@@ -2343,11 +2322,7 @@ async def _on_forward_to_panel(
         thread_id=None,
     )
     _t = asyncio.create_task(runner.run_round(topic))
-    _t.add_done_callback(
-        lambda t: logger.warning("Forward-triggered round raised: %s", t.exception())
-        if not t.cancelled() and t.exception()
-        else None
-    )
+    _t.add_done_callback(task_error_callback("Forward-triggered round", logger))
     await message.reply("🎙 Запускаю обсуждение на панели…")
 
 def start_digest_scheduler(
@@ -2360,9 +2335,6 @@ def start_digest_scheduler(
     task: asyncio.Task[None] = asyncio.create_task(
         _digest_loop(bot, admin_user_id, timezone_str, digest_time)
     )
-    task.add_done_callback(
-        lambda t: logger.warning("Digest loop raised: %s", t.exception())
-        if not t.cancelled() and t.exception() else None
-    )
+    task.add_done_callback(task_error_callback("Digest loop", logger))
     logger.info("Contact digest scheduler started (time=%s %s)", digest_time, timezone_str)
     return task

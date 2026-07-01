@@ -74,13 +74,16 @@ async def test_panelfind_returns_hits():
     assert "Биткоин" in reply or "биткоин" in reply.lower()
 
 
-async def test_panelfind_non_admin_ignored():
-    from claudebots.routers.admin import _panelfind
+async def test_is_admin_filter_accepts_admin():
+    from claudebots.routers.admin import _is_admin
+    msg = _make_message(user_id=42)
+    assert await _is_admin(msg, _make_settings(admin_id=42)) is True
 
-    msg = _make_message(user_id=999, text="/panelfind что-то")
-    msg.text = "/panelfind что-то"
-    await _panelfind(msg, _make_settings(admin_id=42))
-    msg.answer.assert_not_awaited()
+
+async def test_is_admin_filter_rejects_non_admin():
+    from claudebots.routers.admin import _is_admin
+    msg = _make_message(user_id=999)
+    assert await _is_admin(msg, _make_settings(admin_id=42)) is False
 
 
 async def test_panelfind_empty_query_shows_usage():
@@ -128,21 +131,6 @@ async def test_panelbest_no_ratings_shows_empty_message():
     reply = msg.answer.call_args[0][0]
     assert "нет" in reply.lower() or "👍" in reply
 
-
-async def test_panelbest_non_admin_ignored():
-    from claudebots.routers.admin import _panelbest
-
-    msg = _make_message(user_id=999, text="/panelbest")
-    await _panelbest(msg, _make_settings(admin_id=42))
-    msg.answer.assert_not_awaited()
-
-
-async def test_panelworst_non_admin_ignored():
-    from claudebots.routers.admin import _panelworst
-
-    msg = _make_message(user_id=999, text="/panelworst")
-    await _panelworst(msg, _make_settings(admin_id=42))
-    msg.answer.assert_not_awaited()
 
 
 async def test_panelbest_shows_rounds_with_memory(tmp_path, monkeypatch):
@@ -194,15 +182,6 @@ async def test_panelworst_shows_bad_rounds(tmp_path, monkeypatch):
 # /panelschedule and /panelcancel
 # ---------------------------------------------------------------------------
 
-async def test_panelschedule_non_admin_ignored():
-    from claudebots.routers.admin import _panelschedule
-
-    msg = _make_message(user_id=999, text="/panelschedule 15:00 Тема")
-    settings = _make_settings(admin_id=42)
-    settings.user_timezone = "Europe/Moscow"
-    settings.panel_chat_id = -1001
-    await _panelschedule(msg, {}, MagicMock(), MagicMock(), MagicMock(), MagicMock(), settings)
-    msg.answer.assert_not_awaited()
 
 
 async def test_panelschedule_missing_topic_shows_usage():

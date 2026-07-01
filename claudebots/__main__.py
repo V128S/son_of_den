@@ -8,7 +8,13 @@ from aiogram.types import ErrorEvent
 
 from claudebots.bots import create_all_bots
 from claudebots.core import state as _state
-from claudebots.core.ai_registry import AIClient, AIRegistry, FallbackClient
+from claudebots.core.ai_registry import (
+    AIClient,
+    AIRegistry,
+    FallbackClient,
+    TOKEN_PRICE_INPUT_PER_M,
+    TOKEN_PRICE_OUTPUT_PER_M,
+)
 from claudebots.core.alerts import AlertSender
 from claudebots.core.calendar_client import GoogleCalendarClient
 from claudebots.core.claude_client import ClaudeClient
@@ -133,7 +139,7 @@ async def _budget_monitor(ai_registry, bot, admin_user_id: int, budget_usd: floa
             continue
         daily = ai_registry.get_daily_total_usage()
         # Approximate cost using Sonnet 4.6 pricing (mixed providers — best-effort estimate)
-        cost = daily["input"] / 1_000_000 * 3.0 + daily["output"] / 1_000_000 * 15.0
+        cost = daily["input"] / 1_000_000 * TOKEN_PRICE_INPUT_PER_M + daily["output"] / 1_000_000 * TOKEN_PRICE_OUTPUT_PER_M
         if cost >= budget_usd:
             try:
                 await bot.send_message(
@@ -148,6 +154,16 @@ async def _budget_monitor(ai_registry, bot, admin_user_id: int, budget_usd: floa
                 logger.warning("Budget alert sent: cost=%.4f limit=%.2f", cost, budget_usd)
             except Exception as e:
                 logger.warning("Budget alert send failed: %s", e)
+
+
+async def _cancel_task(task: asyncio.Task | None) -> None:
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def amain() -> None:
@@ -368,9 +384,12 @@ async def amain() -> None:
         timeout=180.0,
         cookies_browser=settings.ig_cookies_browser,
         cookies_file=settings.ig_cookies_file,
+        threads_cookies_file=settings.threads_cookies_file,
     )
-    if settings.ig_cookies_file:
-        logger.info("Social downloader enabled (Threads via cookies file %s)", settings.ig_cookies_file)
+    if settings.threads_cookies_file:
+        logger.info("Social downloader: Threads cookies from %s", settings.threads_cookies_file)
+    elif settings.ig_cookies_file:
+        logger.info("Social downloader: Threads cookies from ig file %s", settings.ig_cookies_file)
     elif settings.ig_cookies_browser:
         logger.info(
             "Social downloader enabled (TikTok, X/Twitter, Threads via %s cookies)",
@@ -641,80 +660,12 @@ async def amain() -> None:
     try:
         await dp.start_polling(*active_bots)
     finally:
-        guardian_task.cancel()
-        try:
-            await guardian_task
-        except asyncio.CancelledError:
-            pass
-        daily_reset_task.cancel()
-        try:
-            await daily_reset_task
-        except asyncio.CancelledError:
-            pass
-        periodic_save_task.cancel()
-        try:
-            await periodic_save_task
-        except asyncio.CancelledError:
-            pass
-        if revival_task is not None:
-            revival_task.cancel()
-            try:
-                await revival_task
-            except asyncio.CancelledError:
-                pass
-        if digest_task is not None:
-            digest_task.cancel()
-            try:
-                await digest_task
-            except asyncio.CancelledError:
-                pass
-        if reminder_task is not None:
-            reminder_task.cancel()
-            try:
-                await reminder_task
-            except asyncio.CancelledError:
-                pass
-        if briefing_task is not None:
-            briefing_task.cancel()
-            try:
-                await briefing_task
-            except asyncio.CancelledError:
-                pass
-        if feed_task is not None:
-            feed_task.cancel()
-            try:
-                await feed_task
-            except asyncio.CancelledError:
-                pass
-        if budget_task is not None:
-            budget_task.cancel()
-            try:
-                await budget_task
-            except asyncio.CancelledError:
-                pass
-        if daily_news_task is not None:
-            daily_news_task.cancel()
-            try:
-                await daily_news_task
-            except asyncio.CancelledError:
-                pass
-        if followup_task is not None:
-            followup_task.cancel()
-            try:
-                await followup_task
-            except asyncio.CancelledError:
-                pass
-        summary_task.cancel()
-        try:
-            await summary_task
-        except asyncio.CancelledError:
-            pass
-        if feed_digest_task is not None:
-            feed_digest_task.cancel()
-            try:
-                await feed_digest_task
-            except asyncio.CancelledError:
-                pass
+        for _t in (
+            guardian_task, daily_reset_task, periodic_save_task, summary_task,
+            revival_task, digest_task, reminder_task, briefing_task,
+            feed_task, budget_task, daily_news_task, followup_task, feed_digest_task,
+        ):
+            await _cancel_task(_t)
 
 
 def main() -> None:
